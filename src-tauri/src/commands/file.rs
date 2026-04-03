@@ -22,7 +22,7 @@ pub async fn open_file_by_dialog(app: AppHandle) -> Result<Option<OpenedFile>, S
 
     let path_buf = file_path
         .into_path()
-        .map_err(|_| "Failed to resolve path".to_string())?;
+        .map_err(|_| "Failed to resolve selected file path".to_string())?;
 
     let path = path_buf.to_string_lossy().to_string();
     let name = file_service::file_name_from_path(&path);
@@ -41,12 +41,16 @@ pub fn save_file_content(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn save_file_as(app: AppHandle, content: String) -> Result<Option<OpenedFile>, String> {
+pub async fn save_file_as(app: AppHandle, content: String) -> Result<Option<String>, String> {
     let (tx, rx) = std::sync::mpsc::channel();
 
-    app.dialog().file().save_file(move |file_path| {
-        let _ = tx.send(file_path);
-    });
+    app.dialog()
+        .file()
+        .add_filter("Markdown", &["md", "markdown", "txt"])
+        .set_file_name("Untitled.md")
+        .save_file(move |file_path| {
+            let _ = tx.send(file_path);
+        });
 
     let selected = rx.recv().map_err(|_| "Dialog canceled".to_string())?;
 
@@ -56,12 +60,20 @@ pub async fn save_file_as(app: AppHandle, content: String) -> Result<Option<Open
 
     let path_buf = file_path
         .into_path()
-        .map_err(|_| "Failed to resolve path".to_string())?;
+        .map_err(|_| "Failed to resolve selected save path".to_string())?;
 
     let path = path_buf.to_string_lossy().to_string();
-    let name = file_service::file_name_from_path(&path);
 
     file_service::write_file(&path, &content)?;
 
-    Ok(Some(OpenedFile { path, name, content }))
+    Ok(Some(path))
+}
+#[tauri::command]
+pub fn read_file(path: String) -> Result<String, String> {
+    use std::fs;
+
+    let content = fs::read_to_string(&path)
+        .map_err(|e| format!("读取文件失败: {}", e))?;
+
+    Ok(content)
 }

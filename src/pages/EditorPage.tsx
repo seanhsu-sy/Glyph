@@ -1,49 +1,1600 @@
-import React from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useEditorStore } from "../app/store/editorStore";
+import { useTabStore } from "../app/store/tabStore";
+import { useWritingStatsStore } from "../app/store/writingStatsStore";
 import { MarkdownEditor } from "../features/editor/components/MarkdownEditor";
+import { OutlinePanel } from "../features/editor/components/OutlinePanel";
 import { Toolbar } from "../features/editor/components/Toolbar";
+import { ReferencesPanel } from "../features/preview/components/ReferencesPanel";
 import { MarkdownPreview } from "../features/preview/components/MarkdownPreview";
+import { useWritingTracker } from "../features/stats/hooks/useWritingTracker";
+import {
+  createDocument,
+  deleteDocument,
+  listDocuments,
+  readFile,
+  renameDocument,
+  saveFileContent,
+} from "../shared/lib/tauri";
+import type { Book, DocumentItem } from "../shared/lib/tauri";
 
-export function EditorPage() {
+type EditorPageProps = {
+  book: Book;
+  onBack: () => void;
+};
+
+type PendingAction =
+  | { type: "openDoc"; doc: DocumentItem }
+  | { type: "back" }
+  | null;
+
+type SearchResultItem = {
+  doc: DocumentItem;
+  matchCount: number;
+  snippet: string;
+};
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildSnippet(content: string, query: string): string {
+  const normalizedContent = content.replace(/\s+/g, " ").trim();
+  const normalizedQuery = query.trim();
+  if (!normalizedContent || !normalizedQuery) return "";
+
+  const lowerContent = normalizedContent.toLowerCase();
+  const lowerQuery = normalizedQuery.toLowerCase();
+  const index = lowerContent.indexOf(lowerQuery);
+
+  if (index === -1) {
+    return normalizedContent.slice(0, 100);
+  }
+
+  const start = Math.max(0, index - 24);
+  const end = Math.min(
+    normalizedContent.length,
+    index + normalizedQuery.length + 56,
+  );
+  const prefix = start > 0 ? "…" : "";
+  const suffix = end < normalizedContent.length ? "…" : "";
+
+  return `${prefix}${normalizedContent.slice(start, end)}${suffix}`;
+}
+
+function renderHighlightedText(
+  text: string,
+  query: string,
+): React.ReactNode {
+  const trimmed = query.trim();
+  if (!trimmed) return text;
+
+  const regex = new RegExp(`(${escapeRegExp(trimmed)})`, "ig");
+  const parts = text.split(regex);
+
+  return parts.map((part, index) => {
+    if (part.toLowerCase() === trimmed.toLowerCase()) {
+      return (
+        <mark
+          key={`${part}-${index}`}
+          style={{
+            background: "rgba(59,130,246,0.22)",
+            color: "var(--text)",
+            padding: "0 2px",
+            borderRadius: 3,
+          }}
+        >
+          {part}
+        </mark>
+      );
+    }
+
+    return <span key={`${part}-${index}`}>{part}</span>;
+  });
+}
+
+function formatMinutes(ms: number) {
+  return Math.round(ms / 60000);
+}
+
+function getTargetStorageKey(bookId: string) {
+  return `writing_target_${bookId}`;
+}
+
+export function EditorPage({ book, onBack }: EditorPageProps) {
   const content = useEditorStore((s) => s.content);
+  const filePath = useEditorStore((s) => s.filePath);
+  const fileName = useEditorStore((s) => s.fileName);
+  const isDirty = useEditorStore((s) => s.isDirty);
+  const liveWordCount = useEditorStore((s) => s.wordCount);
+  const setFile = useEditorStore((s) => s.setFile);
+  const setDirty = useEditorStore((s) => s.setDirty);
+  const setSaveStatus = useEditorStore((s) => s.setSaveStatus);
+
+  const toolRailOpen = useEditorStore((s) => s.toolRailOpen);
+  const sidePanelOpen = useEditorStore((s) => s.sidePanelOpen);
+  const sidePanelMode = useEditorStore((s) => s.sidePanelMode);
+
+  const openSidePanel = useEditorStore((s) => s.openSidePanel);
+  const closeToolRail = useEditorStore((s) => s.closeToolRail);
+  const closeSidePanel = useEditorStore((s) => s.closeSidePanel);
+
+  const tabs = useTabStore((s) => s.tabs);
+  const activeTabId = useTabStore((s) => s.activeTabId);
+  const openTab = useTabStore((s) => s.openTab);
+  const setActiveTab = useTabStore((s) => s.setActiveTab);
+  const closeTab = useTabStore((s) => s.closeTab);
+  const updateTabContent = useTabStore((s) => s.updateTabContent);
+  const renameTabByPath = useTabStore((s) => s.renameTabByPath);
+  const removeTabByPath = useTabStore((s) => s.removeTabByPath);
+  const clearTabs = useTabStore((s) => s.clearTabs);
+
+  const today = useWritingStatsStore((s) => s.today);
+
+  const activeTab = useMemo(
+    () => tabs.find((tab) => tab.id === activeTabId) ?? null,
+    [tabs, activeTabId],
+  );
+
+  const syncingFromTabRef = useRef(false);
+
+  const [docs, setDocs] = useState<DocumentItem[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [docsError, setDocsError] = useState<string | null>(null);
+
+  const [creatingChapter, setCreatingChapter] = useState(false);
+  const [creatingOutline, setCreatingOutline] = useState(false);
+  const [newDocTitle, setNewDocTitle] = useState("");
+  const [createDocError, setCreateDocError] = useState<string | null>(null);
+  const [createDocSubmitting, setCreateDocSubmitting] = useState(false);
+
+  const [libraryOpen, setLibraryOpen] = useState(true);
+  const [deletingDocPath, setDeletingDocPath] = useState<string | null>(null);
+  const [confirmingDocPath, setConfirmingDocPath] = useState<string | null>(
+    null,
+  );
+
+  const [renamingDocPath, setRenamingDocPath] = useState<string | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const [pendingSubmitting, setPendingSubmitting] = useState(false);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
+
+  const [dailyTarget, setDailyTarget] = useState(2000);
+
+  const showSidePanel = sidePanelOpen;
+  const showToolRail = toolRailOpen && !showSidePanel;
+
+  useWritingTracker({
+    bookId: book.id,
+    filePath,
+    wordCount: liveWordCount,
+  });
+
+  useEffect(() => {
+    const saved = localStorage.getItem(getTargetStorageKey(book.id));
+    const parsed = saved ? Number(saved) : NaN;
+    setDailyTarget(Number.isFinite(parsed) && parsed > 0 ? parsed : 2000);
+  }, [book.id]);
+
+  const chapterDocs = useMemo(
+    () => docs.filter((doc) => doc.kind === "chapter"),
+    [docs],
+  );
+
+  const outlineDocs = useMemo(
+    () => docs.filter((doc) => doc.kind === "outline"),
+    [docs],
+  );
+
+  const loadDocs = async () => {
+    try {
+      setDocsLoading(true);
+      setDocsError(null);
+
+      const nextDocs = await listDocuments(book.folderPath);
+      setDocs(nextDocs);
+    } catch (err) {
+      console.error(err);
+      setDocsError(String(err));
+    } finally {
+      setDocsLoading(false);
+    }
+  };
+
+  const handleSave = async () => {
+    if (!filePath) return true;
+
+    try {
+      setSaveStatus("saving");
+      await saveFileContent(filePath, content);
+      setDirty(false);
+      setSaveStatus("saved");
+
+      if (activeTabId) {
+        updateTabContent(activeTabId, {
+          content,
+          isDirty: false,
+          fileName,
+          filePath,
+        });
+      }
+
+      return true;
+    } catch (err) {
+      console.error("save failed", err);
+      setSaveStatus("unsaved");
+      return false;
+    }
+  };
+
+  useEffect(() => {
+    void loadDocs();
+  }, [book.folderPath]);
+
+  useEffect(() => {
+    return () => {
+      clearTabs();
+    };
+  }, [clearTabs]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleSave();
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [filePath, content, activeTabId]);
+
+  useEffect(() => {
+    if (!filePath || !isDirty) return;
+
+    setSaveStatus("unsaved");
+
+    const timer = window.setTimeout(async () => {
+      try {
+        setSaveStatus("saving");
+        await saveFileContent(filePath, content);
+        setDirty(false);
+        setSaveStatus("saved");
+
+        if (activeTabId) {
+          updateTabContent(activeTabId, {
+            content,
+            isDirty: false,
+            fileName,
+            filePath,
+          });
+        }
+      } catch (err) {
+        console.error("autosave failed", err);
+        setSaveStatus("unsaved");
+      }
+    }, 1000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    filePath,
+    fileName,
+    content,
+    isDirty,
+    setDirty,
+    setSaveStatus,
+    activeTabId,
+    updateTabContent,
+  ]);
+
+  useEffect(() => {
+    if (!filePath) return;
+
+    setDocs((prev) =>
+      prev.map((doc) =>
+        doc.path === filePath ? { ...doc, wordCount: liveWordCount } : doc,
+      ),
+    );
+  }, [filePath, liveWordCount]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const runSearch = async () => {
+      if (sidePanelMode !== "search") return;
+
+      const query = searchQuery.trim();
+      if (!query) {
+        setSearchResults([]);
+        setSearching(false);
+        return;
+      }
+
+      try {
+        setSearching(true);
+
+        const regex = new RegExp(escapeRegExp(query), "gi");
+        const results = await Promise.all(
+          docs.map(async (doc) => {
+            try {
+              const text = await readFile(doc.path);
+              const matches = text.match(regex);
+              const matchCount = matches?.length ?? 0;
+
+              if (matchCount === 0) return null;
+
+              return {
+                doc,
+                matchCount,
+                snippet: buildSnippet(text, query),
+              } satisfies SearchResultItem;
+            } catch (err) {
+              console.error("搜索读取失败", doc.path, err);
+              return null;
+            }
+          }),
+        );
+
+        if (cancelled) return;
+
+        const filtered = results.filter(
+          (item): item is SearchResultItem => item !== null,
+        );
+
+        filtered.sort((a, b) => {
+          if (b.matchCount !== a.matchCount) {
+            return b.matchCount - a.matchCount;
+          }
+          return a.doc.name.localeCompare(b.doc.name);
+        });
+
+        setSearchResults(filtered);
+      } finally {
+        if (!cancelled) {
+          setSearching(false);
+        }
+      }
+    };
+
+    void runSearch();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sidePanelMode, searchQuery, docs]);
+
+  useEffect(() => {
+    syncingFromTabRef.current = true;
+  
+    if (!activeTab) {
+      window.setTimeout(() => {
+        syncingFromTabRef.current = false;
+      }, 0);
+      return;
+    }
+  
+    setFile({
+      filePath: activeTab.filePath,
+      fileName: activeTab.fileName,
+      content: activeTab.content,
+    });
+    setDirty(activeTab.isDirty);
+  
+    window.setTimeout(() => {
+      syncingFromTabRef.current = false;
+    }, 0);
+  }, [activeTabId, activeTab, setFile, setDirty]);
+
+  useEffect(() => {
+    if (!activeTabId) return;
+    if (!filePath) return;
+    if (syncingFromTabRef.current) return;
+
+    updateTabContent(activeTabId, {
+      content,
+      isDirty,
+      fileName,
+      filePath,
+    });
+  }, [activeTabId, filePath, fileName, content, isDirty, updateTabContent]);
+
+  const openDocNow = async (doc: DocumentItem) => {
+    try {
+      const fileContent = await readFile(doc.path);
+
+      openTab({
+        filePath: doc.path,
+        fileName: doc.name,
+        content: fileContent,
+      });
+
+      setFile({
+        filePath: doc.path,
+        fileName: doc.name,
+        content: fileContent,
+      });
+      setDirty(false);
+      setSaveStatus("saved");
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleOpenDoc = async (doc: DocumentItem) => {
+    if (renamingDocPath) return;
+
+    if (filePath === doc.path) {
+      setRenamingDocPath(doc.path);
+      setRenameTitle(doc.name.replace(/\.md$/i, ""));
+      return;
+    }
+
+    if (isDirty) {
+      setPendingAction({ type: "openDoc", doc });
+      return;
+    }
+
+    await openDocNow(doc);
+  };
+
+  const handleBackRequest = () => {
+    if (isDirty) {
+      setPendingAction({ type: "back" });
+      return;
+    }
+
+    onBack();
+  };
+
+  const handleConfirmPendingAction = async () => {
+    if (!pendingAction) return;
+
+    try {
+      setPendingSubmitting(true);
+
+      const ok = await handleSave();
+      if (!ok) return;
+
+      if (pendingAction.type === "openDoc") {
+        await openDocNow(pendingAction.doc);
+      } else if (pendingAction.type === "back") {
+        onBack();
+      }
+    } finally {
+      setPendingSubmitting(false);
+      setPendingAction(null);
+    }
+  };
+
+  const handleCancelPendingAction = () => {
+    setPendingAction(null);
+  };
+
+  const handleCreateDoc = async (kind: "chapter" | "outline") => {
+    const trimmed = newDocTitle.trim();
+    if (!trimmed) {
+      setCreateDocError(kind === "chapter" ? "请输入章节名" : "请输入大纲名");
+      return;
+    }
+
+    try {
+      setCreateDocSubmitting(true);
+      setCreateDocError(null);
+
+      const created = await createDocument(book.folderPath, trimmed, kind);
+      await loadDocs();
+      await openDocNow(created);
+
+      setNewDocTitle("");
+      setCreatingChapter(false);
+      setCreatingOutline(false);
+    } catch (err) {
+      console.error(err);
+      setCreateDocError(String(err));
+    } finally {
+      setCreateDocSubmitting(false);
+    }
+  };
+
+  const handleDeleteDoc = async (doc: DocumentItem) => {
+    try {
+      setDeletingDocPath(doc.path);
+
+      if (filePath === doc.path && isDirty) {
+        const ok = await handleSave();
+        if (!ok) return;
+      }
+
+      await deleteDocument(doc.path);
+      await loadDocs();
+
+      removeTabByPath(doc.path);
+
+      if (filePath === doc.path) {
+        setFile({
+          filePath: null,
+          fileName: "Untitled.md",
+          content: "",
+        });
+      }
+    } catch (err) {
+      console.error("delete doc failed", err);
+      alert(`删除失败：${String(err)}`);
+    } finally {
+      setDeletingDocPath(null);
+      setConfirmingDocPath(null);
+    }
+  };
+
+  const handleSubmitRename = async (doc: DocumentItem) => {
+    const trimmed = renameTitle.trim();
+
+    if (!trimmed) {
+      setRenamingDocPath(null);
+      setRenameTitle("");
+      return;
+    }
+
+    const currentBaseName = doc.name.replace(/\.md$/i, "");
+    if (trimmed === currentBaseName) {
+      setRenamingDocPath(null);
+      setRenameTitle("");
+      return;
+    }
+
+    try {
+      if (filePath === doc.path && isDirty) {
+        const ok = await handleSave();
+        if (!ok) return;
+      }
+
+      const renamed = await renameDocument(doc.path, trimmed);
+      await loadDocs();
+
+      renameTabByPath(doc.path, {
+        newPath: renamed.path,
+        newFileName: renamed.name,
+      });
+
+      if (filePath === doc.path) {
+        setFile({
+          filePath: renamed.path,
+          fileName: renamed.name,
+          content,
+        });
+      }
+
+      setRenamingDocPath(null);
+      setRenameTitle("");
+    } catch (err) {
+      console.error("rename doc failed", err);
+      alert(`重命名失败：${String(err)}`);
+      setRenamingDocPath(null);
+      setRenameTitle("");
+    }
+  };
+
+  const handleOpenPreview = () => {
+    closeToolRail();
+    openSidePanel("preview");
+  };
+
+  const handleOpenOutline = () => {
+    closeToolRail();
+    openSidePanel("outline");
+  };
+
+  const handleOpenReferences = () => {
+    closeToolRail();
+    openSidePanel("references");
+  };
+
+  const handleOpenSearch = () => {
+    closeToolRail();
+    openSidePanel("search");
+  };
+
+  const renderCreateBox = (kind: "chapter" | "outline") => {
+    const isOpen = kind === "chapter" ? creatingChapter : creatingOutline;
+    if (!isOpen) return null;
+
+    return (
+      <div
+        style={{
+          padding: 10,
+          borderBottom: "1px solid var(--border)",
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          background: "var(--card)",
+        }}
+      >
+        <input
+          type="text"
+          value={newDocTitle}
+          placeholder={kind === "chapter" ? "输入章节名" : "输入大纲名"}
+          onChange={(e) => setNewDocTitle(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              void handleCreateDoc(kind);
+            }
+          }}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            padding: "6px 8px",
+            border: "1px solid var(--btn-border)",
+            borderRadius: 8,
+            outline: "none",
+            background: "var(--btn-bg)",
+            color: "var(--text)",
+            fontSize: 11,
+          }}
+        />
+
+        {createDocError ? (
+          <div style={{ fontSize: 10, color: "#ef4444" }}>{createDocError}</div>
+        ) : null}
+
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            type="button"
+            onClick={() => {
+              void handleCreateDoc(kind);
+            }}
+            disabled={createDocSubmitting}
+            style={{
+              border: "1px solid var(--btn-border)",
+              borderRadius: 8,
+              background: "var(--btn-bg)",
+              color: "var(--text)",
+              padding: "5px 8px",
+              cursor: "pointer",
+              fontSize: 11,
+            }}
+          >
+            {createDocSubmitting ? "..." : "创建"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setCreatingChapter(false);
+              setCreatingOutline(false);
+              setNewDocTitle("");
+              setCreateDocError(null);
+            }}
+            disabled={createDocSubmitting}
+            style={{
+              border: "1px solid var(--btn-border)",
+              borderRadius: 8,
+              background: "var(--btn-bg)",
+              color: "var(--text)",
+              padding: "5px 8px",
+              cursor: "pointer",
+              fontSize: 11,
+            }}
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderDocList = (items: DocumentItem[]) => (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+      {items.map((doc) => {
+        const active = filePath === doc.path;
+        const deleting = deletingDocPath === doc.path;
+        const confirming = confirmingDocPath === doc.path;
+        const renaming = renamingDocPath === doc.path;
+
+        return (
+          <div
+            key={doc.path}
+            style={{
+              display: "flex",
+              gap: 5,
+            }}
+          >
+            {renaming ? (
+              <input
+                autoFocus
+                value={renameTitle}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => setRenameTitle(e.target.value)}
+                onFocus={(e) => e.target.select()}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    void handleSubmitRename(doc);
+                  }
+
+                  if (e.key === "Escape") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setRenamingDocPath(null);
+                    setRenameTitle("");
+                  }
+                }}
+                onBlur={() => {
+                  void handleSubmitRename(doc);
+                }}
+                style={{
+                  flex: 1,
+                  padding: "5px 7px",
+                  borderRadius: 8,
+                  border: "1px solid var(--accent)",
+                  outline: "none",
+                  fontSize: 11,
+                  background: "rgba(59,130,246,0.12)",
+                  color: "var(--text)",
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleOpenDoc(doc);
+                }}
+                style={{
+                  flex: 1,
+                  textAlign: "left",
+                  padding: "5px 7px",
+                  borderRadius: 8,
+                  border: "1px solid var(--btn-border)",
+                  background: active ? "rgba(59,130,246,0.12)" : "var(--btn-bg)",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span
+                  style={{
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    fontSize: 11,
+                  }}
+                >
+                  {doc.name}
+                  {active && isDirty ? " *" : ""}
+                </span>
+
+                <span
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 10,
+                    color: "var(--text-sub)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}
+                >
+                  {doc.wordCount}
+                </span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => {
+                if (confirming) {
+                  void handleDeleteDoc(doc);
+                  return;
+                }
+                setConfirmingDocPath(doc.path);
+              }}
+              disabled={deleting}
+              style={{
+                width: 56,
+                borderRadius: 8,
+                border: "1px solid var(--btn-border)",
+                background: confirming ? "#fff4e5" : "var(--btn-bg)",
+                color: "var(--text)",
+                cursor: "pointer",
+                fontSize: 11,
+                padding: "0 6px",
+              }}
+            >
+              {deleting ? "..." : confirming ? "确认" : "删除"}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
 
   return (
     <div
       style={{
         display: "flex",
-        flexDirection: "column",
         width: "100%",
         height: "100%",
+        background: "var(--bg)",
+        color: "var(--text)",
+        position: "relative",
       }}
     >
-      <Toolbar />
+      {libraryOpen ? (
+        <div
+          style={{
+            width: 280,
+            minWidth: 280,
+            borderRight: "1px solid var(--border)",
+            background: "var(--panel-bg)",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          <div
+            style={{
+              padding: 10,
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+            }}
+          >
+            <button
+              type="button"
+              onClick={handleBackRequest}
+              style={{
+                border: "1px solid var(--btn-border)",
+                borderRadius: 8,
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                padding: "5px 8px",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              返回
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setLibraryOpen(false)}
+              style={{
+                border: "1px solid var(--btn-border)",
+                borderRadius: 8,
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                padding: "5px 8px",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              隐藏
+            </button>
+          </div>
+
+          <div
+            style={{
+              padding: 10,
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <div style={{ display: "flex", gap: 6 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatingChapter((v) => !v);
+                  setCreatingOutline(false);
+                  setCreateDocError(null);
+                }}
+                style={{
+                  flex: 1,
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 8,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                  padding: "5px 8px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                新章节
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setCreatingOutline((v) => !v);
+                  setCreatingChapter(false);
+                  setCreateDocError(null);
+                }}
+                style={{
+                  flex: 1,
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 8,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                  padding: "5px 8px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                新大纲
+              </button>
+            </div>
+          </div>
+
+          {renderCreateBox("outline")}
+          {renderCreateBox("chapter")}
+
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: "auto",
+              padding: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            {docsLoading ? (
+              <div style={{ color: "var(--text-sub)", fontSize: 10 }}>
+                读取中…
+              </div>
+            ) : docsError ? (
+              <div style={{ color: "#ef4444", fontSize: 10 }}>{docsError}</div>
+            ) : (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-sub)",
+                    }}
+                  >
+                    大纲
+                  </div>
+                  {renderDocList(outlineDocs)}
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-sub)",
+                    }}
+                  >
+                    章节
+                  </div>
+                  {renderDocList(chapterDocs)}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div
+          style={{
+            width: 38,
+            minWidth: 38,
+            borderRight: "1px solid var(--border)",
+            background: "var(--panel-bg)",
+            display: "flex",
+            justifyContent: "center",
+            paddingTop: 10,
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => setLibraryOpen(true)}
+            style={{
+              width: 24,
+              height: 24,
+              border: "1px solid var(--btn-border)",
+              borderRadius: 8,
+              background: "var(--btn-bg)",
+              color: "var(--text)",
+              cursor: "pointer",
+              fontSize: 11,
+            }}
+          >
+            ≡
+          </button>
+        </div>
+      )}
+
       <div
         style={{
           display: "flex",
+          flexDirection: "column",
           flex: 1,
+          minWidth: 0,
           minHeight: 0,
+          background: "var(--bg)",
+          color: "var(--text)",
         }}
       >
         <div
           style={{
-            flex: 1,
-            borderRight: "1px solid #e2e2e2",
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            padding: "4px 8px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--card)",
+            overflowX: "auto",
           }}
         >
-          <MarkdownEditor />
+          {tabs.map((tab) => {
+            const tabActive = tab.id === activeTabId;
+
+            return (
+              <div
+                key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  minWidth: 0,
+                  maxWidth: 180,
+                  padding: "4px 8px",
+                  borderRadius: 8,
+                  border: "1px solid var(--btn-border)",
+                  background: tabActive ? "rgba(59,130,246,0.12)" : "var(--btn-bg)",
+                  cursor: "pointer",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "var(--text)",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                >
+                  {tab.fileName}
+                  {tab.isDirty ? " *" : ""}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(tab.id);
+                  }}
+                  style={{
+                    width: 16,
+                    height: 16,
+                    border: "none",
+                    background: "transparent",
+                    color: "var(--text-sub)",
+                    cursor: "pointer",
+                    padding: 0,
+                    lineHeight: 1,
+                    flexShrink: 0,
+                    fontSize: 10,
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
         </div>
+
+        <Toolbar mode="global" />
+
         <div
           style={{
+            display: "flex",
             flex: 1,
-            padding: "0 12px",
-            overflow: "auto",
+            minHeight: 0,
+            width: "100%",
+            background: "var(--bg)",
           }}
         >
-          <MarkdownPreview content={content} />
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "column",
+              minHeight: 0,
+              background: "var(--bg)",
+            }}
+          >
+            <Toolbar mode="editor" />
+
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                background: "var(--bg)",
+              }}
+            >
+              <MarkdownEditor />
+            </div>
+          </div>
+
+          {showSidePanel ? (
+            <div
+              style={{
+                flex: 1,
+                minWidth: 0,
+                borderLeft: "1px solid var(--border)",
+                background: "var(--panel-bg)",
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "8px 10px",
+                  borderBottom: "1px solid var(--border)",
+                  background: "var(--toolbar-bg)",
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={handleOpenPreview}
+                    style={{
+                      border: "1px solid var(--btn-border)",
+                      background:
+                        sidePanelMode === "preview"
+                          ? "rgba(59,130,246,0.12)"
+                          : "var(--btn-bg)",
+                      color: "var(--text)",
+                      borderRadius: 6,
+                      padding: "3px 8px",
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                  >
+                    预览
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenOutline}
+                    style={{
+                      border: "1px solid var(--btn-border)",
+                      background:
+                        sidePanelMode === "outline"
+                          ? "rgba(59,130,246,0.12)"
+                          : "var(--btn-bg)",
+                      color: "var(--text)",
+                      borderRadius: 6,
+                      padding: "3px 8px",
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                  >
+                    大纲
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenReferences}
+                    style={{
+                      border: "1px solid var(--btn-border)",
+                      background:
+                        sidePanelMode === "references"
+                          ? "rgba(59,130,246,0.12)"
+                          : "var(--btn-bg)",
+                      color: "var(--text)",
+                      borderRadius: 6,
+                      padding: "3px 8px",
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                  >
+                    关联
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenSearch}
+                    style={{
+                      border: "1px solid var(--btn-border)",
+                      background:
+                        sidePanelMode === "search"
+                          ? "rgba(59,130,246,0.12)"
+                          : "var(--btn-bg)",
+                      color: "var(--text)",
+                      borderRadius: 6,
+                      padding: "3px 8px",
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                  >
+                    搜索
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => closeSidePanel()}
+                  style={{
+                    border: "1px solid var(--btn-border)",
+                    background: "var(--btn-bg)",
+                    color: "var(--text)",
+                    borderRadius: 6,
+                    width: 24,
+                    height: 24,
+                    cursor: "pointer",
+                    lineHeight: 1,
+                    fontSize: 11,
+                  }}
+                  aria-label="close panel"
+                  title="close"
+                >
+                  ×
+                </button>
+              </div>
+
+              <div
+                style={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflow: "auto",
+                  padding: 10,
+                  background: "var(--panel-bg)",
+                  color: "var(--text)",
+                }}
+              >
+                {sidePanelMode === "preview" ? (
+                  <MarkdownPreview content={content} />
+                ) : sidePanelMode === "outline" ? (
+                  <OutlinePanel docs={outlineDocs} currentFilePath={filePath} />
+                ) : sidePanelMode === "references" ? (
+                  <ReferencesPanel />
+                ) : sidePanelMode === "search" ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 10,
+                    }}
+                  >
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.currentTarget.value)}
+                      placeholder="搜索当前书内全文…"
+                      style={{
+                        width: "100%",
+                        boxSizing: "border-box",
+                        padding: "7px 9px",
+                        border: "1px solid var(--btn-border)",
+                        borderRadius: 8,
+                        background: "var(--btn-bg)",
+                        color: "var(--text)",
+                        outline: "none",
+                        fontSize: 11,
+                      }}
+                    />
+
+                    {searchQuery.trim() === "" ? (
+                      <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+                        输入关键词后搜索当前书内所有文档
+                      </div>
+                    ) : searching ? (
+                      <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+                        搜索中…
+                      </div>
+                    ) : searchResults.length === 0 ? (
+                      <div style={{ fontSize: 11, color: "var(--text-sub)" }}>
+                        没有找到结果
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {searchResults.map((item) => (
+                          <button
+                            key={item.doc.path}
+                            type="button"
+                            onClick={() => {
+                              void handleOpenDoc(item.doc);
+                            }}
+                            style={{
+                              textAlign: "left",
+                              border: "1px solid var(--btn-border)",
+                              borderRadius: 8,
+                              background: "var(--btn-bg)",
+                              color: "var(--text)",
+                              padding: 10,
+                              cursor: "pointer",
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 6,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 8,
+                              }}
+                            >
+                              <span
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  overflow: "hidden",
+                                  textOverflow: "ellipsis",
+                                  whiteSpace: "nowrap",
+                                }}
+                              >
+                                {item.doc.name}
+                              </span>
+
+                              <span
+                                style={{
+                                  flexShrink: 0,
+                                  fontSize: 10,
+                                  color: "var(--text-sub)",
+                                }}
+                              >
+                                {item.matchCount} 处
+                              </span>
+                            </div>
+
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--text-sub)",
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              {renderHighlightedText(item.snippet, searchQuery)}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : showToolRail ? (
+            <div
+              style={{
+                borderLeft: "1px solid var(--border)",
+                background: "var(--panel-bg)",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 8,
+                paddingTop: 10,
+                paddingLeft: 6,
+                paddingRight: 6,
+              }}
+            >
+              <button
+                type="button"
+                onClick={handleOpenPreview}
+                style={{
+                  width: "100%",
+                  height: 30,
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 10,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  lineHeight: 1,
+                  whiteSpace: "nowrap",
+                }}
+                title="预览"
+              >
+                预览
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenOutline}
+                style={{
+                  width: "100%",
+                  height: 30,
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 10,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  lineHeight: 1,
+                  whiteSpace: "nowrap",
+                }}
+                title="大纲"
+              >
+                大纲
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenReferences}
+                style={{
+                  width: "100%",
+                  height: 30,
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 10,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  lineHeight: 1,
+                  whiteSpace: "nowrap",
+                }}
+                title="关联"
+              >
+                关联
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenSearch}
+                style={{
+                  width: "100%",
+                  height: 30,
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 10,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  lineHeight: 1,
+                  whiteSpace: "nowrap",
+                }}
+                title="搜索"
+              >
+                搜索
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
+
+      <div
+        style={{
+          position: "absolute",
+          right: 16,
+          bottom: 12,
+          fontSize: 11,
+          color: "var(--text-sub)",
+          background: "rgba(255,255,255,0.55)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          padding: "6px 10px",
+          pointerEvents: "none",
+          backdropFilter: "blur(4px)",
+        }}
+      >
+        今日 {today?.totalWords ?? 0}/{dailyTarget} 字 · {formatMinutes(today?.totalDurationMs ?? 0)} 分钟
+      </div>
+
+      {pendingAction ? (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15,23,42,0.35)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 50,
+          }}
+        >
+          <div
+            style={{
+              width: 320,
+              borderRadius: 12,
+              background: "var(--card)",
+              border: "1px solid var(--border)",
+              boxShadow: "0 10px 30px rgba(0,0,0,0.15)",
+              padding: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 13, color: "var(--text)" }}>
+              当前文档有未保存内容，是否先保存？
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                type="button"
+                onClick={handleCancelPendingAction}
+                disabled={pendingSubmitting}
+                style={{
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 8,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                取消
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingAction(null);
+                  if (pendingAction.type === "openDoc") {
+                    void openDocNow(pendingAction.doc);
+                  } else {
+                    onBack();
+                  }
+                }}
+                disabled={pendingSubmitting}
+                style={{
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 8,
+                  background: "#fff4e5",
+                  color: "var(--text)",
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                不保存
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  void handleConfirmPendingAction();
+                }}
+                disabled={pendingSubmitting}
+                style={{
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 8,
+                  background: "rgba(59,130,246,0.12)",
+                  color: "var(--text)",
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                {pendingSubmitting ? "保存中…" : "保存并继续"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
-

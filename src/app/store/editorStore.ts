@@ -1,6 +1,15 @@
 import { create } from "zustand";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "unsaved";
+export type SidePanelMode =
+  | "preview"
+  | "outline"
+  | "references"
+  | "search"
+  | "stats"
+  | "backlinks"
+  | "info"
+  | null;
 
 function countWords(text: string): number {
   if (!text.trim()) return 0;
@@ -11,6 +20,11 @@ function countWords(text: string): number {
   return cjk.length + latin.length;
 }
 
+type TagItem = {
+  tag: string;
+  index: number;
+};
+
 type EditorStore = {
   filePath: string | null;
   fileName: string;
@@ -18,6 +32,18 @@ type EditorStore = {
   isDirty: boolean;
   wordCount: number;
   saveStatus: SaveStatus;
+  fontFamily: string;
+  fontSize: number;
+  history: string[];
+  historyIndex: number;
+
+  toolRailOpen: boolean;
+  sidePanelOpen: boolean;
+  sidePanelMode: SidePanelMode;
+
+  tags: TagItem[];
+  activeBlockIndex: number | null;
+
   setFile: (payload: {
     filePath: string | null;
     fileName: string;
@@ -27,17 +53,51 @@ type EditorStore = {
   setDirty: (dirty: boolean) => void;
   setWordCount: (count: number) => void;
   setSaveStatus: (status: SaveStatus) => void;
+  setFontFamily: (font: string) => void;
+  setFontSize: (size: number) => void;
+  setTags: (tags: TagItem[]) => void;
+  setActiveBlockIndex: (index: number | null) => void;
+
+  undo: () => void;
+  redo: () => void;
+
+  openToolRail: () => void;
+  closeToolRail: () => void;
+  toggleToolRail: () => void;
+
+  openSidePanel: (mode: Exclude<SidePanelMode, null>) => void;
+  closeSidePanel: () => void;
+  toggleSidePanel: (mode: Exclude<SidePanelMode, null>) => void;
 };
 
-export const useEditorStore = create<EditorStore>((set) => ({
+export const useEditorStore = create<EditorStore>((set, get) => ({
   filePath: null,
   fileName: "Untitled.md",
   content: "",
   isDirty: false,
   wordCount: 0,
   saveStatus: "idle",
+  fontFamily: '"Noto Sans SC", system-ui, sans-serif',
+  fontSize: 18,
+  history: [""],
+  historyIndex: 0,
 
-  setFile: ({ filePath, fileName, content }) =>
+  toolRailOpen: false,
+  sidePanelOpen: false,
+  sidePanelMode: null,
+
+  tags: [],
+  activeBlockIndex: null,
+
+  setFile: ({
+    filePath,
+    fileName,
+    content,
+  }: {
+    filePath: string | null;
+    fileName: string;
+    content: string;
+  }) =>
     set({
       filePath,
       fileName,
@@ -45,16 +105,124 @@ export const useEditorStore = create<EditorStore>((set) => ({
       isDirty: false,
       wordCount: countWords(content),
       saveStatus: "saved",
+      history: [content],
+      historyIndex: 0,
+      activeBlockIndex: null,
     }),
 
-  setContent: (content) =>
+  setContent: (content: string) =>
+    set((state) => {
+      // 内容完全没变时，不要重新标脏
+      if (content === state.content) {
+        return {
+          content,
+          wordCount: countWords(content),
+        };
+      }
+
+      const current = state.history[state.historyIndex] ?? state.content;
+      const nextWordCount = countWords(content);
+
+      // 如果和当前历史节点相同，就只同步内容和字数，不追加历史
+      if (content === current) {
+        return {
+          content,
+          isDirty: true,
+          wordCount: nextWordCount,
+          saveStatus: "unsaved" as SaveStatus,
+        };
+      }
+
+      const baseHistory = state.history.slice(0, state.historyIndex + 1);
+      const nextHistory = [...baseHistory, content];
+
+      return {
+        content,
+        isDirty: true,
+        wordCount: nextWordCount,
+        saveStatus: "unsaved" as SaveStatus,
+        history: nextHistory,
+        historyIndex: nextHistory.length - 1,
+      };
+    }),
+
+  setDirty: (dirty: boolean) =>
+    set((state) => ({
+      isDirty: dirty,
+      saveStatus: dirty ? "unsaved" : state.saveStatus,
+    })),
+
+  setWordCount: (count: number) => set({ wordCount: count }),
+  setSaveStatus: (status: SaveStatus) => set({ saveStatus: status }),
+  setFontFamily: (font: string) => set({ fontFamily: font }),
+  setFontSize: (size: number) => set({ fontSize: size }),
+  setTags: (tags: TagItem[]) => set({ tags }),
+  setActiveBlockIndex: (index: number | null) =>
+    set({ activeBlockIndex: index }),
+
+  undo: () => {
+    const { history, historyIndex } = get();
+    if (historyIndex <= 0) return;
+
+    const nextIndex = historyIndex - 1;
+    const nextContent = history[nextIndex] ?? "";
+
     set({
-      content,
+      historyIndex: nextIndex,
+      content: nextContent,
       isDirty: true,
-      wordCount: countWords(content),
+      wordCount: countWords(nextContent),
+      saveStatus: "unsaved",
+    });
+  },
+
+  redo: () => {
+    const { history, historyIndex } = get();
+    if (historyIndex >= history.length - 1) return;
+
+    const nextIndex = historyIndex + 1;
+    const nextContent = history[nextIndex] ?? "";
+
+    set({
+      historyIndex: nextIndex,
+      content: nextContent,
+      isDirty: true,
+      wordCount: countWords(nextContent),
+      saveStatus: "unsaved",
+    });
+  },
+
+  openToolRail: () => set({ toolRailOpen: true }),
+  closeToolRail: () => set({ toolRailOpen: false }),
+  toggleToolRail: () =>
+    set((state) => ({
+      toolRailOpen: !state.toolRailOpen,
+    })),
+
+  openSidePanel: (mode) =>
+    set({
+      sidePanelOpen: true,
+      sidePanelMode: mode,
     }),
 
-  setDirty: (dirty) => set({ isDirty: dirty }),
-  setWordCount: (count) => set({ wordCount: count }),
-  setSaveStatus: (status) => set({ saveStatus: status }),
+  closeSidePanel: () =>
+    set({
+      sidePanelOpen: false,
+      sidePanelMode: null,
+    }),
+
+  toggleSidePanel: (mode) =>
+    set((state) => {
+      if (state.sidePanelOpen && state.sidePanelMode === mode) {
+        return {
+          sidePanelOpen: false,
+          sidePanelMode: null,
+        };
+      }
+
+      return {
+        sidePanelOpen: true,
+        sidePanelMode: mode,
+      };
+    }),
 }));

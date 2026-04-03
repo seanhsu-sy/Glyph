@@ -10,8 +10,8 @@ export async function saveMarkdownFile(path: string, content: string): Promise<v
   await saveFileContent(path, content);
 }
 
-export async function saveMarkdownFileAs(content: string): Promise<OpenedFile | null> {
-  const file = await saveFileAsByDialog(content);
-  return file;
+export async function saveFileAs(content: string): Promise<string | null> {
+  const path = await saveFileAsByDialog(content);
+  return path;
 }
 

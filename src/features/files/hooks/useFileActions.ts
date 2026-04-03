@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useRef } from "react";
 
 import { useEditorStore } from "../../../app/store/editorStore";
-import { openMarkdownFile, saveMarkdownFile, saveMarkdownFileAs } from "../services/fileService";
+import { openMarkdownFile, saveFileAs, saveMarkdownFile } from "../services/fileService";
+
+function fileNameFromPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/");
+  const parts = normalized.split("/");
+  return parts[parts.length - 1] || "Untitled.md";
+}
 
 export function useFileActions() {
   const setFile = useEditorStore((s) => s.setFile);
   const setDirty = useEditorStore((s) => s.setDirty);
   const setSaveStatus = useEditorStore((s) => s.setSaveStatus);
+
   const filePath = useEditorStore((s) => s.filePath);
   const content = useEditorStore((s) => s.content);
+  const isDirty = useEditorStore((s) => s.isDirty);
+
   const timeoutRef = useRef<number | null>(null);
 
   const openFile = useCallback(async (): Promise<void> => {
@@ -38,26 +47,27 @@ export function useFileActions() {
     setSaveStatus("saved");
   }, [filePath, content, setDirty, setSaveStatus]);
 
-  const saveFileAs = useCallback(async (): Promise<void> => {
+  const saveFileAsAction = useCallback(async (): Promise<void> => {
     setSaveStatus("saving");
-    const saved = await saveMarkdownFileAs(content);
 
-    if (!saved) {
-      setSaveStatus("unsaved");
+    const newPath = await saveFileAs(content);
+
+    if (!newPath) {
+      setSaveStatus("idle");
       return;
     }
 
     setFile({
-      filePath: saved.path,
-      fileName: saved.name,
-      content: saved.content,
+      filePath: newPath,
+      fileName: fileNameFromPath(newPath),
+      content,
     });
     setDirty(false);
     setSaveStatus("saved");
   }, [content, setFile, setDirty, setSaveStatus]);
 
   useEffect(() => {
-    if (!filePath) {
+    if (!filePath || !isDirty) {
       return;
     }
 
@@ -79,12 +89,11 @@ export function useFileActions() {
         window.clearTimeout(timeoutRef.current);
       }
     };
-  }, [filePath, content, setDirty, setSaveStatus]);
+  }, [filePath, content, isDirty, setDirty, setSaveStatus]);
 
   return {
     openFile,
     saveFile,
-    saveFileAs,
+    saveFileAs: saveFileAsAction,
   };
 }
-

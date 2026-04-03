@@ -6,17 +6,81 @@ export type OpenedFile = {
   content: string;
 };
 
+export type Book = {
+  id: string;
+  title: string;
+  description?: string;
+  folderName: string;
+  folderPath: string;
+  updatedAt: string;
+  documentCount: number;
+};
+
+export type DocumentItem = {
+  name: string;
+  path: string;
+  wordCount: number;
+  kind: "chapter" | "outline";
+};
+
 export async function openFileByDialog(): Promise<OpenedFile | null> {
-  const result = await invoke<OpenedFile | null>("open_file_by_dialog");
-  return result;
+  return await invoke<OpenedFile | null>("open_file_by_dialog");
 }
 
 export async function saveFileContent(path: string, content: string): Promise<void> {
   await invoke<void>("save_file_content", { path, content });
 }
 
-export async function saveFileAsByDialog(content: string): Promise<OpenedFile | null> {
-  const result = await invoke<OpenedFile | null>("save_file_as", { content });
-  return result;
+export async function saveFileAsByDialog(content: string): Promise<string | null> {
+  return await invoke<string | null>("save_file_as", { content });
 }
 
+export async function listBooks(): Promise<Book[]> {
+  return await invoke<Book[]>("list_books");
+}
+
+export async function createBook(title: string): Promise<Book> {
+  return await invoke<Book>("create_book", { title });
+}
+
+export async function deleteBook(folderPath: string): Promise<void> {
+  await invoke<void>("delete_book", { folderPath });
+}
+
+export async function renameBook(
+  folderPath: string,
+  newTitle: string,
+): Promise<boolean> {
+  return await invoke<boolean>("rename_book", { folderPath, newTitle });
+}
+
+export async function listDocuments(bookPath: string): Promise<DocumentItem[]> {
+  return await invoke<DocumentItem[]>("list_documents", { bookPath });
+}
+
+export async function readFile(path: string): Promise<string> {
+  return await invoke<string>("read_file", { path });
+}
+
+export async function createDocument(
+  bookPath: string,
+  title: string,
+  kind: "chapter" | "outline",
+): Promise<DocumentItem> {
+  return await invoke<DocumentItem>("create_document", {
+    bookPath,
+    title,
+    kind,
+  });
+}
+
+export async function deleteDocument(path: string): Promise<void> {
+  await invoke<void>("delete_document", { path });
+}
+
+export async function renameDocument(
+  path: string,
+  newTitle: string,
+): Promise<DocumentItem> {
+  return await invoke<DocumentItem>("rename_document", { path, newTitle });
+}
