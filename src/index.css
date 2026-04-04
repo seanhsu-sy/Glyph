@@ -27,6 +27,14 @@
 
   --accent: #6d8cff;
   --accent-soft: rgba(109, 140, 255, 0.12);
+
+  /* 正文选区：中性灰，避免与批注、标签混淆为「常态蓝」 */
+  --selection-bg: rgba(55, 58, 62, 0.14);
+  /* CodeMirror：批注高亮（暖琥珀，非蓝） */
+  --cm-annotate-bg: rgba(180, 83, 9, 0.1);
+  --cm-annotate-border: rgba(146, 64, 14, 0.38);
+  --cm-annotate-selection: rgba(217, 119, 6, 0.26);
+  --cm-active-line: rgba(0, 0, 0, 0.035);
 }
 
 [data-theme="dark"] {
@@ -45,6 +53,12 @@
 
   --accent: #86a4ff;
   --accent-soft: rgba(134, 164, 255, 0.16);
+
+  --selection-bg: rgba(220, 225, 235, 0.1);
+  --cm-annotate-bg: rgba(245, 158, 11, 0.12);
+  --cm-annotate-border: rgba(251, 191, 36, 0.32);
+  --cm-annotate-selection: rgba(251, 191, 36, 0.2);
+  --cm-active-line: rgba(255, 255, 255, 0.04);
 }
 
 html,
@@ -83,5 +97,5 @@ select {
 }
 
 ::selection {
-  background: var(--accent-soft);
+  background: var(--selection-bg);
 }

@@ -8,6 +8,10 @@ type ToolbarMode = "global" | "editor";
 
 type ToolbarProps = {
   mode: ToolbarMode;
+  /** 选区批注（仅 editor 模式） */
+  onAnnotateSelection?: () => void;
+  /** 新建便签（仅 editor 模式） */
+  onAddSticky?: () => void;
 };
 
 function getSaveStatusText(status: string, isDirty: boolean) {
@@ -39,7 +43,11 @@ const smallButtonStyle: React.CSSProperties = {
   lineHeight: 1.2,
 };
 
-export function Toolbar({ mode }: ToolbarProps) {
+export function Toolbar({
+  mode,
+  onAnnotateSelection,
+  onAddSticky,
+}: ToolbarProps) {
   const { openFile, saveFile, saveFileAs } = useFileActions();
 
   const fileName = useEditorStore((s) => s.fileName);
@@ -158,6 +166,28 @@ export function Toolbar({ mode }: ToolbarProps) {
         >
           A+
         </button>
+
+        {onAnnotateSelection ? (
+          <button
+            type="button"
+            onClick={onAnnotateSelection}
+            style={smallButtonStyle}
+            title="先选中一段文字，再点此添加批注（正文内高亮）"
+          >
+            批注
+          </button>
+        ) : null}
+
+        {onAddSticky ? (
+          <button
+            type="button"
+            onClick={onAddSticky}
+            style={smallButtonStyle}
+            title="在右下角添加半透明便签，可勾选「跨书」在跨书关联页查看"
+          >
+            便签
+          </button>
+        ) : null}
       </div>
     );
   }

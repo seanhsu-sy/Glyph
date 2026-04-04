@@ -60,6 +60,8 @@ export const useTabStore = create<TabStore>((set, get) => ({
             ? {
                 ...t,
                 fileName,
+                content,
+                isDirty: false,
               }
             : t,
         ),

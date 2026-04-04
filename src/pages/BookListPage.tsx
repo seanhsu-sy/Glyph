@@ -204,7 +204,11 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
   return (
     <div
       style={{
-        minHeight: "100vh",
+        flex: 1,
+        minHeight: 0,
+        overflowY: "auto",
+        WebkitOverflowScrolling: "touch",
+        width: "100%",
         background: "var(--bg)",
         color: "var(--text)",
       }}
@@ -295,7 +299,7 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
             )}
           </div>
 
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
               type="button"
               onClick={toggleTheme}

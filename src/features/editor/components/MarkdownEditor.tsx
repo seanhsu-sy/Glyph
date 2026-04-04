@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
-import { EditorSelection, StateField } from "@codemirror/state";
+import { EditorSelection, Facet, StateField } from "@codemirror/state";
 import {
   Decoration,
   DecorationSet,
@@ -18,14 +18,16 @@ import {
 } from "@codemirror/commands";
 
 import { useEditorStore } from "../../../app/store/editorStore";
+import type { AssocAnchor } from "../../../shared/lib/associations";
 import { useEditorActions } from "../hooks/useEditorActions";
 
 type MarkdownCommand = "h1" | "bold" | "italic";
 
-type MarkdownEditorHandle = {
+export type MarkdownEditorHandle = {
   applyCommand: (type: MarkdownCommand) => void;
   scrollToIndex: (index: number) => void;
   highlightBlockAtIndex: (index: number) => void;
+  getSelection: () => { from: number; to: number; text: string } | null;
   undo: () => void;
   redo: () => void;
 };
@@ -153,7 +155,50 @@ const tagField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
-export function MarkdownEditor() {
+const associationFacet = Facet.define<AssocAnchor[], AssocAnchor[]>({
+  combine: (values) => values[values.length - 1] ?? [],
+});
+
+const associationMark = Decoration.mark({
+  class: "cm-association",
+});
+
+function buildAssociationDecorations(
+  state: EditorView["state"],
+  anchors: AssocAnchor[],
+) {
+  const len = state.doc.length;
+  const ranges: ReturnType<typeof associationMark.range>[] = [];
+  for (const a of anchors) {
+    const from = Math.max(0, Math.min(a.from, len));
+    const to = Math.max(from, Math.min(a.to, len));
+    if (to > from) {
+      ranges.push(associationMark.range(from, to));
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+const associationField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildAssociationDecorations(state, state.facet(associationFacet));
+  },
+  update(_decorations, tr) {
+    return buildAssociationDecorations(
+      tr.state,
+      tr.state.facet(associationFacet),
+    );
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
+type MarkdownEditorProps = {
+  associationAnchors?: AssocAnchor[];
+};
+
+export function MarkdownEditor({
+  associationAnchors = [],
+}: MarkdownEditorProps) {
   const content = useEditorStore((s) => s.content);
   const fontFamily = useEditorStore((s) => s.fontFamily);
   const fontSize = useEditorStore((s) => s.fontSize);
@@ -207,12 +252,21 @@ export function MarkdownEditor() {
       }
 
       .cm-activeLine {
-        background: rgba(59, 130, 246, 0.08);
+        background: var(--cm-active-line);
       }
 
       .cm-tag {
         color: var(--accent);
         font-weight: 600;
+      }
+
+      .cm-association {
+        background: var(--cm-annotate-bg);
+        border-bottom: 1px solid var(--cm-annotate-border);
+      }
+
+      .cm-association ::selection {
+        background: var(--cm-annotate-selection);
       }
 
       .cm-gutters {
@@ -226,9 +280,12 @@ export function MarkdownEditor() {
         border-left-color: var(--text);
       }
 
-      .cm-selectionBackground,
+      .cm-selectionBackground {
+        background: var(--selection-bg) !important;
+      }
+
       .cm-content ::selection {
-        background: rgba(59, 130, 246, 0.25);
+        background: var(--selection-bg);
       }
     `,
     [fontFamily, fontSize],
@@ -327,6 +384,17 @@ export function MarkdownEditor() {
         view.focus();
       },
 
+      getSelection: () => {
+        const view = viewRef.current;
+        if (!view) return null;
+        const sel = view.state.selection.main;
+        return {
+          from: sel.from,
+          to: sel.to,
+          text: view.state.doc.sliceString(sel.from, sel.to),
+        };
+      },
+
       undo: () => {
         const view = viewRef.current;
         if (!view) return;
@@ -347,6 +415,27 @@ export function MarkdownEditor() {
     };
   }, []);
 
+  const extensions = useMemo(
+    () => [
+      markdown(),
+      history(),
+      highlightActiveLine(),
+      EditorView.lineWrapping,
+      associationFacet.of(associationAnchors),
+      associationField,
+      keymap.of([
+        {
+          key: "Enter",
+          run: handleSmartEnter,
+        },
+        ...historyKeymap,
+        ...defaultKeymap,
+      ]),
+      tagField,
+    ],
+    [associationAnchors],
+  );
+
   return (
     <div
       style={{
@@ -361,21 +450,7 @@ export function MarkdownEditor() {
       <CodeMirror
         value={content}
         height="100%"
-        extensions={[
-          markdown(),
-          history(),
-          highlightActiveLine(),
-          EditorView.lineWrapping,
-          keymap.of([
-            {
-              key: "Enter",
-              run: handleSmartEnter,
-            },
-            ...historyKeymap,
-            ...defaultKeymap,
-          ]),
-          tagField,
-        ]}
+        extensions={extensions}
         onCreateEditor={(view) => {
           viewRef.current = view;
         }}

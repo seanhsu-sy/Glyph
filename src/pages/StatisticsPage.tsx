@@ -81,7 +81,11 @@ export function StatisticsPage({ onBack }: Props) {
   return (
     <div
       style={{
-        minHeight: "100vh",
+        flex: 1,
+        minHeight: 0,
+        overflowY: "auto",
+        WebkitOverflowScrolling: "touch",
+        width: "100%",
         background: "var(--bg)",
         color: "var(--text)",
       }}

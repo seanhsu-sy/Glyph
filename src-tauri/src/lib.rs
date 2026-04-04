@@ -14,6 +14,7 @@ pub fn run() {
         open_file_by_dialog,
         read_file,
         save_file_content,
+        save_untitled_in_book,
         save_file_as,
         list_books,
         create_book,

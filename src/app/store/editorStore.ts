@@ -44,6 +44,9 @@ type EditorStore = {
   tags: TagItem[];
   activeBlockIndex: number | null;
 
+  /** 当前写作页所属书籍根目录（仅编辑器内有效），用于内存 Untitled 无对话框保存 */
+  bookFolderPath: string | null;
+
   setFile: (payload: {
     filePath: string | null;
     fileName: string;
@@ -57,6 +60,7 @@ type EditorStore = {
   setFontSize: (size: number) => void;
   setTags: (tags: TagItem[]) => void;
   setActiveBlockIndex: (index: number | null) => void;
+  setBookFolderPath: (path: string | null) => void;
 
   undo: () => void;
   redo: () => void;
@@ -88,6 +92,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
   tags: [],
   activeBlockIndex: null,
+
+  bookFolderPath: null,
 
   setFile: ({
     filePath,
@@ -159,6 +165,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setTags: (tags: TagItem[]) => set({ tags }),
   setActiveBlockIndex: (index: number | null) =>
     set({ activeBlockIndex: index }),
+
+  setBookFolderPath: (path: string | null) => set({ bookFolderPath: path }),
 
   undo: () => {
     const { history, historyIndex } = get();

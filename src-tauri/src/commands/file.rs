@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::models::file_model::OpenedFile;
 use crate::services::file_service;
 use tauri::AppHandle;
@@ -38,6 +40,31 @@ pub async fn open_file_by_dialog(app: AppHandle) -> Result<Option<OpenedFile>, S
 #[tauri::command]
 pub fn save_file_content(path: String, content: String) -> Result<(), String> {
     file_service::write_file(&path, &content)
+}
+
+/// 将未命名草稿直接写入当前书籍文件夹（Untitled.md，若已存在则 Untitled-2.md …），不弹系统对话框。
+#[tauri::command]
+pub fn save_untitled_in_book(book_folder_path: String, content: String) -> Result<String, String> {
+    let base = Path::new(&book_folder_path);
+    if !base.is_dir() {
+        return Err("书籍目录无效或不存在".to_string());
+    }
+
+    for i in 0..1000 {
+        let name = if i == 0 {
+            "Untitled.md".to_string()
+        } else {
+            format!("Untitled-{}.md", i + 1)
+        };
+        let path = base.join(&name);
+        if !path.exists() {
+            let path_str = path.to_string_lossy().to_string();
+            file_service::write_file(&path_str, &content)?;
+            return Ok(path_str);
+        }
+    }
+
+    Err("无法在书籍目录中创建 Untitled 文件".to_string())
 }
 
 #[tauri::command]

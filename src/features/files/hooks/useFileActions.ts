@@ -1,6 +1,9 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback } from "react";
 
 import { useEditorStore } from "../../../app/store/editorStore";
+import { useTabStore } from "../../../app/store/tabStore";
+import { saveUntitledInBook } from "../../../shared/lib/tauri";
+import { isVirtualUntitledPath } from "../../../shared/lib/virtualDocument";
 import { openMarkdownFile, saveFileAs, saveMarkdownFile } from "../services/fileService";
 
 function fileNameFromPath(path: string): string {
@@ -16,9 +19,7 @@ export function useFileActions() {
 
   const filePath = useEditorStore((s) => s.filePath);
   const content = useEditorStore((s) => s.content);
-  const isDirty = useEditorStore((s) => s.isDirty);
-
-  const timeoutRef = useRef<number | null>(null);
+  const bookFolderPath = useEditorStore((s) => s.bookFolderPath);
 
   const openFile = useCallback(async (): Promise<void> => {
     const opened = await openMarkdownFile();
@@ -36,60 +37,96 @@ export function useFileActions() {
     setSaveStatus("saved");
   }, [setFile, setDirty, setSaveStatus]);
 
-  const saveFile = useCallback(async (): Promise<void> => {
-    if (!filePath) {
-      return;
-    }
-
-    setSaveStatus("saving");
-    await saveMarkdownFile(filePath, content);
-    setDirty(false);
-    setSaveStatus("saved");
-  }, [filePath, content, setDirty, setSaveStatus]);
-
   const saveFileAsAction = useCallback(async (): Promise<void> => {
     setSaveStatus("saving");
+    try {
+      const newPath = await saveFileAs(content);
 
-    const newPath = await saveFileAs(content);
+      if (!newPath) {
+        setSaveStatus(filePath ? "unsaved" : "idle");
+        return;
+      }
 
-    if (!newPath) {
-      setSaveStatus("idle");
+      const nextName = fileNameFromPath(newPath);
+      setFile({
+        filePath: newPath,
+        fileName: nextName,
+        content,
+      });
+      setDirty(false);
+      setSaveStatus("saved");
+
+      const { activeTabId, updateTabContent } = useTabStore.getState();
+      if (activeTabId) {
+        updateTabContent(activeTabId, {
+          content,
+          isDirty: false,
+          fileName: nextName,
+          filePath: newPath,
+        });
+      }
+    } catch (err) {
+      console.error("save as failed", err);
+      setSaveStatus("unsaved");
+    }
+  }, [content, filePath, setFile, setDirty, setSaveStatus]);
+
+  const saveFile = useCallback(async (): Promise<void> => {
+    if (!filePath) {
+      await saveFileAsAction();
       return;
     }
 
-    setFile({
-      filePath: newPath,
-      fileName: fileNameFromPath(newPath),
-      content,
-    });
-    setDirty(false);
-    setSaveStatus("saved");
-  }, [content, setFile, setDirty, setSaveStatus]);
-
-  useEffect(() => {
-    if (!filePath || !isDirty) {
+    if (isVirtualUntitledPath(filePath)) {
+      if (bookFolderPath) {
+        try {
+          setSaveStatus("saving");
+          const newPath = await saveUntitledInBook(bookFolderPath, content);
+          const nextName = fileNameFromPath(newPath);
+          setFile({
+            filePath: newPath,
+            fileName: nextName,
+            content,
+          });
+          setDirty(false);
+          setSaveStatus("saved");
+          const { activeTabId, updateTabContent } = useTabStore.getState();
+          if (activeTabId) {
+            updateTabContent(activeTabId, {
+              content,
+              isDirty: false,
+              fileName: nextName,
+              filePath: newPath,
+            });
+          }
+        } catch (err) {
+          console.error("save failed", err);
+          setSaveStatus("unsaved");
+        }
+        return;
+      }
+      await saveFileAsAction();
       return;
     }
 
-    setSaveStatus("unsaved");
-
-    if (timeoutRef.current !== null) {
-      window.clearTimeout(timeoutRef.current);
-    }
-
-    timeoutRef.current = window.setTimeout(async () => {
-      setSaveStatus("saving");
+    setSaveStatus("saving");
+    try {
       await saveMarkdownFile(filePath, content);
       setDirty(false);
       setSaveStatus("saved");
-    }, 500);
-
-    return () => {
-      if (timeoutRef.current !== null) {
-        window.clearTimeout(timeoutRef.current);
-      }
-    };
-  }, [filePath, content, isDirty, setDirty, setSaveStatus]);
+    } catch (err) {
+      console.error("save failed", err);
+      setSaveStatus("unsaved");
+    }
+  }, [
+    filePath,
+    content,
+    bookFolderPath,
+    setDirty,
+    setSaveStatus,
+    saveFileAsAction,
+    setFile,
+  ]);
 
   return {
     openFile,

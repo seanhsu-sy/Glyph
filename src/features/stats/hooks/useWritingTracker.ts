@@ -3,6 +3,7 @@ import {
   appendWritingLog,
   getWritingSummaryByDate,
 } from "../../../shared/lib/stats";
+import { isVirtualUntitledPath } from "../../../shared/lib/virtualDocument";
 import { useWritingStatsStore } from "../../../app/store/writingStatsStore";
 
 type Params = {
@@ -84,7 +85,11 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params) {
   useEffect(() => {
     const prev = prevRef.current;
 
-    if (prev.filePath && prev.filePath !== filePath) {
+    if (
+      prev.filePath &&
+      prev.filePath !== filePath &&
+      !isVirtualUntitledPath(prev.filePath)
+    ) {
       void flushSession(prev.filePath);
     }
 
@@ -92,7 +97,7 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params) {
   }, [filePath, wordCount]);
 
   useEffect(() => {
-    if (!filePath) return;
+    if (!filePath || isVirtualUntitledPath(filePath)) return;
 
     const now = Date.now();
     const session = sessionsRef.current[filePath];
@@ -126,7 +131,9 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params) {
   useEffect(() => {
     return () => {
       Object.keys(sessionsRef.current).forEach((docPath) => {
-        void flushSession(docPath);
+        if (!isVirtualUntitledPath(docPath)) {
+          void flushSession(docPath);
+        }
       });
     };
   }, []);

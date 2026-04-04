@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { readFile, saveFileContent } from "../../../shared/lib/tauri";
 import type { DocumentItem } from "../../../shared/lib/tauri";
 
@@ -19,7 +25,14 @@ function readOutlineFont(): number {
 
 type OutlinePanelProps = {
   docs: DocumentItem[];
+  /** 当前主编辑区打开的文件路径；与侧栏选中的大纲一致时，右侧大纲与中间编辑器共用同一份内容 */
   currentFilePath: string | null;
+  editorContent: string;
+  onEditorContentChange: (content: string) => void;
+  /** 主编辑区是否有未保存修改（用于侧栏换篇前与左侧一致：先提示保存） */
+  editorDirty: boolean;
+  /** 在侧栏列表中点选大纲时，在主编辑区打开该文件（与左侧列表行为一致） */
+  onOpenOutlineInEditor: (doc: DocumentItem) => void | Promise<void>;
 };
 
 const rootShell: CSSProperties = {
@@ -33,7 +46,14 @@ const rootShell: CSSProperties = {
   overflow: "hidden",
 };
 
-export function OutlinePanel({ docs }: OutlinePanelProps) {
+export function OutlinePanel({
+  docs,
+  currentFilePath,
+  editorContent,
+  onEditorContentChange,
+  editorDirty,
+  onOpenOutlineInEditor,
+}: OutlinePanelProps) {
   const outlineDocs = useMemo(
     () => docs.filter((doc) => doc.kind === "outline"),
     [docs],
@@ -50,6 +70,15 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
 
   const [fontPx, setFontPx] = useState(() => readOutlineFont());
 
+  const isLinked = useMemo(() => {
+    if (!currentFilePath || !selectedOutlinePath) return false;
+    if (selectedOutlinePath !== currentFilePath) return false;
+    return outlineDocs.some((d) => d.path === currentFilePath);
+  }, [currentFilePath, selectedOutlinePath, outlineDocs]);
+
+  /** 仅当主编辑区「换到」某大纲路径时对齐侧栏，避免 loadDocs 刷新列表时把用户从列表视图拽回详情 */
+  const lastSyncedCenterOutlineRef = useRef<string | null>(null);
+
   const bumpFont = (delta: number) => {
     setFontPx((prev) => {
       const next = Math.min(
@@ -63,6 +92,24 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
 
   const selectedOutline =
     outlineDocs.find((doc) => doc.path === selectedOutlinePath) ?? null;
+
+  useEffect(() => {
+    if (!currentFilePath) {
+      lastSyncedCenterOutlineRef.current = null;
+      return;
+    }
+    const outlineDoc = outlineDocs.find((d) => d.path === currentFilePath);
+    if (!outlineDoc) {
+      lastSyncedCenterOutlineRef.current = null;
+      return;
+    }
+    if (lastSyncedCenterOutlineRef.current === currentFilePath) {
+      return;
+    }
+    lastSyncedCenterOutlineRef.current = currentFilePath;
+    setSelectedOutlinePath(currentFilePath);
+    setViewMode("detail");
+  }, [currentFilePath, outlineDocs]);
 
   useEffect(() => {
     if (outlineDocs.length === 0) {
@@ -89,6 +136,14 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
 
     const loadOutline = async () => {
       if (!selectedOutlinePath || viewMode !== "detail") return;
+
+      if (isLinked) {
+        setLoading(false);
+        const saved = localStorage.getItem(`outline_note_${selectedOutlinePath}`);
+        setNote(saved || "可在右侧直接修改");
+        setEditingNote(false);
+        return;
+      }
 
       try {
         setLoading(true);
@@ -120,10 +175,11 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
     return () => {
       cancelled = true;
     };
-  }, [selectedOutlinePath, viewMode]);
+  }, [selectedOutlinePath, viewMode, isLinked]);
 
   useEffect(() => {
     if (!selectedOutlinePath || viewMode !== "detail") return;
+    if (isLinked) return;
 
     const timer = window.setTimeout(async () => {
       try {
@@ -139,7 +195,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
     return () => {
       window.clearTimeout(timer);
     };
-  }, [selectedOutlinePath, outlineContent, viewMode]);
+  }, [selectedOutlinePath, outlineContent, viewMode, isLinked]);
 
   useEffect(() => {
     if (!selectedOutlinePath || viewMode !== "detail") return;
@@ -238,8 +294,20 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
                 key={doc.path}
                 type="button"
                 onClick={() => {
-                  setSelectedOutlinePath(doc.path);
-                  setViewMode("detail");
+                  void (async () => {
+                    if (currentFilePath === doc.path) {
+                      setSelectedOutlinePath(doc.path);
+                      setViewMode("detail");
+                      return;
+                    }
+                    if (editorDirty) {
+                      void onOpenOutlineInEditor(doc);
+                      return;
+                    }
+                    await onOpenOutlineInEditor(doc);
+                    setSelectedOutlinePath(doc.path);
+                    setViewMode("detail");
+                  })();
                 }}
                 style={{
                   width: "100%",
@@ -446,8 +514,15 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
           </div>
         ) : selectedOutline ? (
           <textarea
-            value={outlineContent}
-            onChange={(e) => setOutlineContent(e.currentTarget.value)}
+            value={isLinked ? editorContent : outlineContent}
+            onChange={(e) => {
+              const v = e.currentTarget.value;
+              if (isLinked) {
+                onEditorContentChange(v);
+              } else {
+                setOutlineContent(v);
+              }
+            }}
             placeholder="写下结构、节奏、设定、备注……"
             style={{
               flex: 1,
@@ -487,13 +562,15 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
           flexShrink: 0,
         }}
       >
-        {saveState === "saving"
-          ? "保存中…"
-          : saveState === "saved"
-            ? "已保存"
-            : saveState === "error"
-              ? "保存失败"
-              : "idle"}
+        {isLinked
+          ? "与主编辑区同步（⌘S 保存）"
+          : saveState === "saving"
+            ? "保存中…"
+            : saveState === "saved"
+              ? "已保存"
+              : saveState === "error"
+                ? "保存失败"
+                : "idle"}
       </div>
     </div>
   );

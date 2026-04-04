@@ -31,6 +31,14 @@ export async function saveFileContent(path: string, content: string): Promise<vo
   await invoke<void>("save_file_content", { path, content });
 }
 
+/** 无对话框，直接写入书籍目录下的 Untitled.md（或 Untitled-2.md …） */
+export async function saveUntitledInBook(
+  bookFolderPath: string,
+  content: string,
+): Promise<string> {
+  return await invoke<string>("save_untitled_in_book", { bookFolderPath, content });
+}
+
 export async function saveFileAsByDialog(content: string): Promise<string | null> {
   return await invoke<string | null>("save_file_as", { content });
 }

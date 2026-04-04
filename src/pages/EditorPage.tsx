@@ -1,12 +1,23 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { useEditorStore } from "../app/store/editorStore";
 import { useTabStore } from "../app/store/tabStore";
 import { useWritingStatsStore } from "../app/store/writingStatsStore";
-import { MarkdownEditor } from "../features/editor/components/MarkdownEditor";
+import {
+  getMarkdownEditorHandle,
+  MarkdownEditor,
+} from "../features/editor/components/MarkdownEditor";
+import { EditorLinkagesPanel } from "../features/associations/EditorLinkagesPanel";
+import { GlobalAssociationsView } from "../features/associations/GlobalAssociationsView";
 import { OutlinePanel } from "../features/editor/components/OutlinePanel";
 import { Toolbar } from "../features/editor/components/Toolbar";
-import { ReferencesPanel } from "../features/preview/components/ReferencesPanel";
 import { MarkdownPreview } from "../features/preview/components/MarkdownPreview";
 import { useWritingTracker } from "../features/stats/hooks/useWritingTracker";
 import {
@@ -16,8 +27,26 @@ import {
   readFile,
   renameDocument,
   saveFileContent,
+  saveUntitledInBook,
 } from "../shared/lib/tauri";
 import type { Book, DocumentItem } from "../shared/lib/tauri";
+import {
+  anchorsForDocument,
+  loadAssociations,
+  migrateAssociationDocPath,
+  patchAssociation,
+  removeAssociation,
+  saveAssociations,
+  stickiesVisible,
+  upsertAssociation,
+  type AssociationRecord,
+} from "../shared/lib/associations";
+import {
+  DEFAULT_WELCOME_MARKDOWN,
+  hasGlobalWelcomeBeenShown,
+  markGlobalWelcomeShown,
+} from "../shared/lib/welcomeContent";
+import { isVirtualUntitledPath, virtualUntitledPath } from "../shared/lib/virtualDocument";
 
 type EditorPageProps = {
   book: Book;
@@ -108,6 +137,11 @@ const MIN_SIDE_W = 200;
 const DEFAULT_SIDE_W = 320;
 const SPLIT_DIVIDER_W = 6;
 
+function fileNameFromDiskPath(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] || "Untitled.md";
+}
+
 export function EditorPage({ book, onBack }: EditorPageProps) {
   const content = useEditorStore((s) => s.content);
   const filePath = useEditorStore((s) => s.filePath);
@@ -115,8 +149,10 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   const isDirty = useEditorStore((s) => s.isDirty);
   const liveWordCount = useEditorStore((s) => s.wordCount);
   const setFile = useEditorStore((s) => s.setFile);
+  const setContent = useEditorStore((s) => s.setContent);
   const setDirty = useEditorStore((s) => s.setDirty);
   const setSaveStatus = useEditorStore((s) => s.setSaveStatus);
+  const setBookFolderPath = useEditorStore((s) => s.setBookFolderPath);
 
   const toolRailOpen = useEditorStore((s) => s.toolRailOpen);
   const sidePanelOpen = useEditorStore((s) => s.sidePanelOpen);
@@ -141,6 +177,29 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
+  );
+
+  const [associations, setAssociations] = useState<AssociationRecord[]>(() =>
+    loadAssociations(),
+  );
+  const [anchorDraft, setAnchorDraft] = useState<{
+    from: number;
+    to: number;
+    quote: string;
+    body: string;
+    scopeGlobal: boolean;
+  } | null>(null);
+
+  const [globalAssocOverlayOpen, setGlobalAssocOverlayOpen] = useState(false);
+
+  const associationAnchors = useMemo(
+    () => anchorsForDocument(associations, book.id, filePath),
+    [associations, book.id, filePath],
+  );
+
+  const visibleStickies = useMemo(
+    () => stickiesVisible(associations, book.id),
+    [associations, book.id],
   );
 
   const syncingFromTabRef = useRef(false);
@@ -179,8 +238,12 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
     if (Number.isFinite(n) && n >= MIN_SIDE_W) return Math.round(n);
     return DEFAULT_SIDE_W;
   });
+
   const rowContainerRef = useRef<HTMLDivElement>(null);
   const draggingSplitRef = useRef(false);
+  const prevFilePathForMigrateRef = useRef<string | null>(null);
+  /** 仅首次进入本书且无任何标签时自动打开内存 Untitled；用户关掉所有标签后不应再次自动打开 */
+  const didAutoOpenUntitledRef = useRef(false);
 
   const showSidePanel = sidePanelOpen;
   const showToolRail = toolRailOpen && !showSidePanel;
@@ -246,7 +309,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
     [docs],
   );
 
-  const loadDocs = async () => {
+  const loadDocs = useCallback(async () => {
     try {
       setDocsLoading(true);
       setDocsError(null);
@@ -259,10 +322,41 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
     } finally {
       setDocsLoading(false);
     }
-  };
+  }, [book.folderPath]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!filePath) return true;
+
+    if (isVirtualUntitledPath(filePath)) {
+      try {
+        setSaveStatus("saving");
+        const newPath = await saveUntitledInBook(book.folderPath, content);
+        const newName = fileNameFromDiskPath(newPath);
+        setFile({
+          filePath: newPath,
+          fileName: newName,
+          content,
+        });
+        setDirty(false);
+        setSaveStatus("saved");
+
+        if (activeTabId) {
+          updateTabContent(activeTabId, {
+            content,
+            isDirty: false,
+            fileName: newName,
+            filePath: newPath,
+          });
+        }
+
+        void loadDocs();
+        return true;
+      } catch (err) {
+        console.error("save failed", err);
+        setSaveStatus("unsaved");
+        return false;
+      }
+    }
 
     try {
       setSaveStatus("saving");
@@ -285,17 +379,74 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
       setSaveStatus("unsaved");
       return false;
     }
-  };
+  }, [
+    filePath,
+    content,
+    activeTabId,
+    fileName,
+    setFile,
+    setDirty,
+    setSaveStatus,
+    updateTabContent,
+    book.folderPath,
+    loadDocs,
+  ]);
+
+  useEffect(() => {
+    setBookFolderPath(book.folderPath);
+    return () => setBookFolderPath(null);
+  }, [book.folderPath, setBookFolderPath]);
 
   useEffect(() => {
     void loadDocs();
-  }, [book.folderPath]);
+  }, [book.folderPath, loadDocs]);
 
   useEffect(() => {
     return () => {
       clearTabs();
     };
   }, [clearTabs]);
+
+  useEffect(() => {
+    didAutoOpenUntitledRef.current = false;
+  }, [book.id]);
+
+  useEffect(() => {
+    const vpath = virtualUntitledPath(book.id);
+    if (tabs.some((t) => t.filePath === vpath)) return;
+    if (tabs.length > 0) return;
+    if (didAutoOpenUntitledRef.current) return;
+    didAutoOpenUntitledRef.current = true;
+    const showWelcome = !hasGlobalWelcomeBeenShown();
+    const content = showWelcome ? DEFAULT_WELCOME_MARKDOWN : "";
+    openTab({
+      filePath: vpath,
+      fileName: "Untitled.md",
+      content,
+    });
+    if (showWelcome) {
+      markGlobalWelcomeShown();
+    }
+  }, [book.id, tabs, openTab]);
+
+  useEffect(() => {
+    const prev = prevFilePathForMigrateRef.current;
+    if (
+      prev &&
+      isVirtualUntitledPath(prev) &&
+      filePath &&
+      !isVirtualUntitledPath(filePath) &&
+      prev !== filePath
+    ) {
+      setAssociations((items) => {
+        const next = migrateAssociationDocPath(items, book.id, prev, filePath);
+        saveAssociations(next);
+        return next;
+      });
+      void loadDocs();
+    }
+    prevFilePathForMigrateRef.current = filePath;
+  }, [filePath, book.id, loadDocs]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -307,47 +458,21 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [filePath, content, activeTabId]);
+  }, [handleSave]);
 
   useEffect(() => {
     if (!filePath || !isDirty) return;
 
     setSaveStatus("unsaved");
 
-    const timer = window.setTimeout(async () => {
-      try {
-        setSaveStatus("saving");
-        await saveFileContent(filePath, content);
-        setDirty(false);
-        setSaveStatus("saved");
-
-        if (activeTabId) {
-          updateTabContent(activeTabId, {
-            content,
-            isDirty: false,
-            fileName,
-            filePath,
-          });
-        }
-      } catch (err) {
-        console.error("autosave failed", err);
-        setSaveStatus("unsaved");
-      }
+    const timer = window.setTimeout(() => {
+      void handleSave();
     }, 1000);
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [
-    filePath,
-    fileName,
-    content,
-    isDirty,
-    setDirty,
-    setSaveStatus,
-    activeTabId,
-    updateTabContent,
-  ]);
+  }, [filePath, content, isDirty, handleSave]);
 
   useEffect(() => {
     if (!filePath) return;
@@ -427,25 +552,32 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
 
   useEffect(() => {
     syncingFromTabRef.current = true;
-  
+
     if (!activeTab) {
+      setFile({
+        filePath: null,
+        fileName: "Untitled.md",
+        content: "",
+      });
+      setDirty(false);
+      setSaveStatus("idle");
       window.setTimeout(() => {
         syncingFromTabRef.current = false;
       }, 0);
       return;
     }
-  
+
     setFile({
       filePath: activeTab.filePath,
       fileName: activeTab.fileName,
       content: activeTab.content,
     });
     setDirty(activeTab.isDirty);
-  
+
     window.setTimeout(() => {
       syncingFromTabRef.current = false;
     }, 0);
-  }, [activeTabId, activeTab, setFile, setDirty]);
+  }, [activeTabId, activeTab, setFile, setDirty, setSaveStatus]);
 
   useEffect(() => {
     if (!activeTabId) return;
@@ -530,6 +662,70 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
 
   const handleCancelPendingAction = () => {
     setPendingAction(null);
+  };
+
+  const handleAnnotateSelection = () => {
+    const sel = getMarkdownEditorHandle()?.getSelection();
+    if (!sel || sel.from === sel.to) {
+      window.alert("请先选中一段文字");
+      return;
+    }
+    if (!filePath) {
+      window.alert("请先打开一篇文档");
+      return;
+    }
+    setAnchorDraft({
+      from: sel.from,
+      to: sel.to,
+      quote: sel.text,
+      body: "",
+      scopeGlobal: false,
+    });
+  };
+
+  const handleAddSticky = () => {
+    const id = crypto.randomUUID();
+    setAssociations((prev) => {
+      const next = upsertAssociation(prev, {
+        id,
+        bookId: book.id,
+        docPath: null,
+        from: -1,
+        to: -1,
+        quote: "",
+        body: "",
+        scope: "book",
+        kind: "sticky",
+      });
+      saveAssociations(next);
+      return next;
+    });
+  };
+
+  const handleSaveAnchorDraft = () => {
+    if (!anchorDraft || !filePath) return;
+    const body = anchorDraft.body.trim();
+    if (!body) {
+      window.alert("批注内容不能为空");
+      return;
+    }
+    const id = crypto.randomUUID();
+    setAssociations((prev) => {
+      const next = upsertAssociation(prev, {
+        id,
+        bookId: book.id,
+        docPath: filePath,
+        from: anchorDraft.from,
+        to: anchorDraft.to,
+        quote: anchorDraft.quote,
+        body,
+        scope: anchorDraft.scopeGlobal ? "global" : "book",
+        kind: "anchor",
+      });
+      saveAssociations(next);
+      return next;
+    });
+    setAnchorDraft(null);
   };
 
   const handleCreateDoc = async (kind: "chapter" | "outline") => {
@@ -1180,16 +1376,277 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
               background: "var(--bg)",
             }}
           >
-            <Toolbar mode="editor" />
+            <Toolbar
+              mode="editor"
+              onAnnotateSelection={handleAnnotateSelection}
+              onAddSticky={handleAddSticky}
+            />
 
             <div
               style={{
                 flex: 1,
                 minHeight: 0,
                 background: "var(--bg)",
+                position: "relative",
               }}
             >
-              <MarkdownEditor />
+              <MarkdownEditor associationAnchors={associationAnchors} />
+
+              {anchorDraft ? (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 16,
+                    right: 16,
+                    bottom: 16,
+                    maxWidth: 440,
+                    margin: "0 auto",
+                    zIndex: 20,
+                    padding: 12,
+                    borderRadius: 10,
+                    border: "1px solid var(--border)",
+                    background: "color-mix(in srgb, var(--panel-bg) 90%, transparent)",
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.18)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-sub)",
+                      maxHeight: 48,
+                      overflow: "auto",
+                    }}
+                  >
+                    {anchorDraft.quote || "（空选区）"}
+                  </div>
+                  <textarea
+                    value={anchorDraft.body}
+                    onChange={(e) =>
+                      setAnchorDraft((d) =>
+                        d ? { ...d, body: e.target.value } : d,
+                      )
+                    }
+                    placeholder="批注内容…"
+                    rows={3}
+                    style={{
+                      width: "100%",
+                      resize: "vertical",
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      padding: 8,
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                  <label
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 12,
+                      color: "var(--text-sub)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={anchorDraft.scopeGlobal}
+                      onChange={(e) =>
+                        setAnchorDraft((d) =>
+                          d ? { ...d, scopeGlobal: e.target.checked } : d,
+                        )
+                      }
+                    />
+                    跨书关联（全局可见）
+                  </label>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      gap: 8,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setAnchorDraft(null)}
+                      style={{
+                        border: "1px solid var(--btn-border)",
+                        background: "var(--btn-bg)",
+                        color: "var(--text)",
+                        borderRadius: 8,
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveAnchorDraft}
+                      style={{
+                        border: "1px solid var(--accent)",
+                        background: "var(--accent)",
+                        color: "var(--bg)",
+                        borderRadius: 8,
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              <div
+                style={{
+                  position: "fixed",
+                  right: 16,
+                  bottom: 16,
+                  width: 260,
+                  maxHeight: "42vh",
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 8,
+                  zIndex: 19,
+                  pointerEvents: "none",
+                }}
+              >
+                {visibleStickies.map((s) => (
+                  <div
+                    key={s.id}
+                    style={{
+                      pointerEvents: "auto",
+                      padding: 10,
+                      borderRadius: 10,
+                      border: "1px solid var(--border)",
+                      background:
+                        "color-mix(in srgb, var(--panel-bg) 88%, transparent)",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 6,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      <span style={{ fontSize: 10, color: "var(--text-sub)" }}>
+                        便签
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setAssociations((prev) => {
+                            const next = patchAssociation(prev, s.id, {
+                              dismissed: true,
+                            });
+                            saveAssociations(next);
+                            return next;
+                          })
+                        }
+                        style={{
+                          border: "none",
+                          background: "transparent",
+                          color: "var(--text-sub)",
+                          cursor: "pointer",
+                          fontSize: 14,
+                          lineHeight: 1,
+                          padding: 2,
+                        }}
+                        title="关闭"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <textarea
+                      value={s.body}
+                      onChange={(e) =>
+                        setAssociations((prev) => {
+                          const next = patchAssociation(prev, s.id, {
+                            body: e.target.value,
+                          });
+                          saveAssociations(next);
+                          return next;
+                        })
+                      }
+                      placeholder="写点什么…"
+                      rows={3}
+                      style={{
+                        width: "100%",
+                        resize: "vertical",
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        padding: 6,
+                        borderRadius: 6,
+                        border: "1px solid var(--border)",
+                        background: "var(--bg)",
+                        color: "var(--text)",
+                        boxSizing: "border-box",
+                      }}
+                    />
+                    <label
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 11,
+                        color: "var(--text-sub)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={s.scope === "global"}
+                        onChange={(e) =>
+                          setAssociations((prev) => {
+                            const next = patchAssociation(prev, s.id, {
+                              scope: e.target.checked ? "global" : "book",
+                            });
+                            saveAssociations(next);
+                            return next;
+                          })
+                        }
+                      />
+                      跨书
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAssociations((prev) => {
+                          const next = removeAssociation(prev, s.id);
+                          saveAssociations(next);
+                          return next;
+                        })
+                      }
+                      style={{
+                        alignSelf: "flex-end",
+                        border: "none",
+                        background: "transparent",
+                        color: "var(--text-sub)",
+                        fontSize: 11,
+                        cursor: "pointer",
+                        padding: 0,
+                      }}
+                    >
+                      删除
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -1379,7 +1836,20 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                       overflow: "hidden",
                     }}
                   >
-                    <OutlinePanel docs={outlineDocs} currentFilePath={filePath} />
+                    <OutlinePanel
+                      docs={outlineDocs}
+                      currentFilePath={filePath}
+                      editorContent={content}
+                      onEditorContentChange={setContent}
+                      editorDirty={isDirty}
+                      onOpenOutlineInEditor={async (doc) => {
+                        if (isDirty) {
+                          setPendingAction({ type: "openDoc", doc });
+                          return;
+                        }
+                        await openDocNow(doc);
+                      }}
+                    />
                   </div>
                 ) : sidePanelMode === "references" ? (
                   <div
@@ -1389,7 +1859,12 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                       overflow: "auto",
                     }}
                   >
-                    <ReferencesPanel />
+                    <EditorLinkagesPanel
+                      book={book}
+                      associations={associations}
+                      setAssociations={setAssociations}
+                      onOpenCrossBook={() => setGlobalAssocOverlayOpen(true)}
+                    />
                   </div>
                 ) : sidePanelMode === "search" ? (
                   <div
@@ -1627,6 +2102,16 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
       >
         今日 {today?.totalWords ?? 0}/{dailyTarget} 字 · {formatMinutes(today?.totalDurationMs ?? 0)} 分钟
       </div>
+
+      {globalAssocOverlayOpen ? (
+        <GlobalAssociationsView
+          variant="overlay"
+          onClose={() => {
+            setGlobalAssocOverlayOpen(false);
+            setAssociations(loadAssociations());
+          }}
+        />
+      ) : null}
 
       {pendingAction ? (
         <div
