@@ -221,21 +221,46 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
     >
       <div
         style={{
+          position: "fixed",
+          top: 16,
+          right: 16,
+          zIndex: 50,
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap",
+          justifyContent: "flex-end",
+          maxWidth: "calc(100vw - 32px)",
+        }}
+      >
+        <ThemeModeButton />
+        <TypewriterSoundButton />
+        <button
+          type="button"
+          onClick={() => setCreating(true)}
+          style={{
+            border: "1px solid var(--btn-border)",
+            borderRadius: 9,
+            background: "var(--btn-bg)",
+            color: "var(--text)",
+            padding: "8px 12px",
+            cursor: "pointer",
+            fontSize: 12,
+            lineHeight: 1.2,
+          }}
+        >
+          新建书籍
+        </button>
+      </div>
+
+      <div
+        style={{
           maxWidth: 960,
           margin: "0 auto",
           padding: "32px 24px 48px",
         }}
       >
-        <div
-          style={{
-            marginBottom: 22,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 16,
-            flexWrap: "wrap",
-          }}
-        >
+        <div style={{ marginBottom: 22 }}>
           <div>
             <div
               style={{
@@ -295,28 +320,6 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                 {librarySubtitle}
               </div>
             )}
-          </div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <ThemeModeButton />
-            <TypewriterSoundButton />
-
-            <button
-              type="button"
-              onClick={() => setCreating(true)}
-              style={{
-                border: "1px solid var(--btn-border)",
-                borderRadius: 9,
-                background: "var(--btn-bg)",
-                color: "var(--text)",
-                padding: "8px 12px",
-                cursor: "pointer",
-                fontSize: 12,
-                lineHeight: 1.2,
-              }}
-            >
-              新建书籍
-            </button>
           </div>
         </div>
 
