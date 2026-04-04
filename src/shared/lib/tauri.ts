@@ -14,6 +14,10 @@ export type Book = {
   folderPath: string;
   updatedAt: string;
   documentCount: number;
+  /** 分组，空字符串表示未分组 */
+  group: string;
+  /** 封面文件绝对路径，无封面时为 null */
+  coverPath: string | null;
 };
 
 export type DocumentItem = {
@@ -60,6 +64,35 @@ export async function renameBook(
   newTitle: string,
 ): Promise<boolean> {
   return await invoke<boolean>("rename_book", { folderPath, newTitle });
+}
+
+export async function setBookGroup(
+  folderPath: string,
+  group: string,
+): Promise<void> {
+  await invoke<void>("set_book_group", { bookFolderPath: folderPath, group });
+}
+
+export async function clearBookCover(folderPath: string): Promise<void> {
+  await invoke<void>("clear_book_cover", { bookFolderPath: folderPath });
+}
+
+/** 弹出系统文件选择，将图片复制到该书 `.glyph/cover.*` */
+export async function pickAndSetBookCover(
+  folderPath: string,
+): Promise<string | null> {
+  return await invoke<string | null>("pick_and_set_book_cover", {
+    bookFolderPath: folderPath,
+  });
+}
+
+/** 读取封面为 data URL，供 `<img src>` 使用（不依赖 asset 协议） */
+export async function getBookCoverDataUrl(
+  folderPath: string,
+): Promise<string | null> {
+  return await invoke<string | null>("get_book_cover_data_url", {
+    bookFolderPath: folderPath,
+  });
 }
 
 export async function listDocuments(bookPath: string): Promise<DocumentItem[]> {

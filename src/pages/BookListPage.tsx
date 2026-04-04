@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  clearBookCover,
   createBook,
   deleteBook,
+  getBookCoverDataUrl,
   listBooks,
+  pickAndSetBookCover,
   renameBook,
+  setBookGroup,
 } from "../shared/lib/tauri";
 import type { Book } from "../shared/lib/tauri";
 import { getStatsOverview } from "../shared/lib/stats";
@@ -28,6 +33,115 @@ function formatMinutes(ms: number) {
   return Math.round(ms / 60000);
 }
 
+function displayGroupName(group: string | undefined): string {
+  const t = (group ?? "").trim();
+  return t || "未分组";
+}
+
+function sortGroupKeys(groups: Set<string>): string[] {
+  const ung = "未分组";
+  const arr = [...groups];
+  const ungIncluded = arr.includes(ung);
+  const rest = arr
+    .filter((g) => g !== ung)
+    .sort((a, b) => a.localeCompare(b, "zh-CN"));
+  return ungIncluded ? [ung, ...rest] : rest.sort((a, b) => a.localeCompare(b, "zh-CN"));
+}
+
+type BookCoverSlotProps = {
+  coverPath: string | null;
+  bookFolderPath: string;
+  coverDataBust: number;
+  canInteract: boolean;
+  onPick: () => void;
+  onClear: () => void;
+};
+
+function BookCoverSlot({
+  coverPath,
+  bookFolderPath,
+  coverDataBust,
+  canInteract,
+  onPick,
+  onClear,
+}: BookCoverSlotProps) {
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!coverPath || !isTauri()) {
+      setDataUrl(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const url = await getBookCoverDataUrl(bookFolderPath);
+        if (!cancelled) setDataUrl(url);
+      } catch {
+        if (!cancelled) setDataUrl(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [coverPath, bookFolderPath, coverDataBust]);
+
+  return (
+    <div
+      role={canInteract ? "button" : undefined}
+      tabIndex={canInteract ? 0 : undefined}
+      onClick={(e) => {
+        if (!canInteract) return;
+        e.stopPropagation();
+        if (e.shiftKey) {
+          void onClear();
+        } else {
+          void onPick();
+        }
+      }}
+      onKeyDown={(e) => {
+        if (!canInteract) return;
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          void onPick();
+        }
+      }}
+      title={canInteract ? "点击上传封面；Shift+点击清除封面" : undefined}
+      style={{
+        width: 72,
+        height: 96,
+        flexShrink: 0,
+        borderRadius: 10,
+        overflow: "hidden",
+        border: "1px solid var(--border)",
+        background: "var(--btn-bg)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: canInteract ? "pointer" : "default",
+        outline: "none",
+      }}
+    >
+      {dataUrl ? (
+        <img
+          src={dataUrl}
+          alt=""
+          draggable={false}
+          style={{
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            pointerEvents: "none",
+          }}
+        />
+      ) : (
+        <span style={{ fontSize: 10, color: "var(--text-sub)", pointerEvents: "none" }}>封面</span>
+      )}
+    </div>
+  );
+}
+
 export function BookListPage({ onOpenBook, onOpenStats }: Props) {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(false);
@@ -48,6 +162,20 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
   const [bookDescriptions, setBookDescriptions] = useState<Record<string, string>>({});
   const [editingDescriptionBookId, setEditingDescriptionBookId] = useState<string | null>(null);
   const [descriptionDraft, setDescriptionDraft] = useState("");
+
+  const [groupFilter, setGroupFilter] = useState<"all" | string>("all");
+  const [editingGroupBookId, setEditingGroupBookId] = useState<string | null>(null);
+  const [groupDraft, setGroupDraft] = useState("");
+  const groupEditCancelledRef = useRef(false);
+  const titleClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** 同一 coverPath 下替换图片后强制重新拉取 data URL */
+  const [coverDataBust, setCoverDataBust] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    return () => {
+      if (titleClickTimerRef.current) clearTimeout(titleClickTimerRef.current);
+    };
+  }, []);
 
   const loadBooks = async () => {
     setLoading(true);
@@ -173,6 +301,54 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
     setDescriptionDraft("");
   };
 
+  const handleSubmitGroup = async (book: Book) => {
+    if (!isTauri()) return;
+    if (groupEditCancelledRef.current) {
+      groupEditCancelledRef.current = false;
+      return;
+    }
+    const g = groupDraft.trim();
+    try {
+      await setBookGroup(book.folderPath, g);
+      setEditingGroupBookId(null);
+      setGroupDraft("");
+      await loadBooks();
+    } catch (err) {
+      console.error(err);
+      alert(`保存分组失败：${String(err)}`);
+    }
+  };
+
+  const handlePickCover = async (book: Book) => {
+    if (!isTauri()) return;
+    try {
+      await pickAndSetBookCover(book.folderPath);
+      await loadBooks();
+      setCoverDataBust((prev) => ({
+        ...prev,
+        [book.id]: (prev[book.id] ?? 0) + 1,
+      }));
+    } catch (err) {
+      console.error(err);
+      alert(`设置封面失败：${String(err)}`);
+    }
+  };
+
+  const handleClearCover = async (book: Book) => {
+    if (!isTauri()) return;
+    try {
+      await clearBookCover(book.folderPath);
+      await loadBooks();
+      setCoverDataBust((prev) => ({
+        ...prev,
+        [book.id]: (prev[book.id] ?? 0) + 1,
+      }));
+    } catch (err) {
+      console.error(err);
+      alert(`清除封面失败：${String(err)}`);
+    }
+  };
+
   const statsCards = useMemo(
     () => [
       {
@@ -199,6 +375,32 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
     [overview],
   );
 
+  const uniqueGroupKeys = useMemo(() => {
+    const s = new Set<string>();
+    for (const b of books) {
+      s.add(displayGroupName(b.group));
+    }
+    return sortGroupKeys(s);
+  }, [books]);
+
+  const filteredBooks = useMemo(() => {
+    if (groupFilter === "all") return books;
+    return books.filter((b) => displayGroupName(b.group) === groupFilter);
+  }, [books, groupFilter]);
+
+  const bookSections = useMemo(() => {
+    const m = new Map<string, Book[]>();
+    for (const b of filteredBooks) {
+      const g = displayGroupName(b.group);
+      if (!m.has(g)) m.set(g, []);
+      m.get(g)!.push(b);
+    }
+    const keys = sortGroupKeys(new Set(m.keys()));
+    return keys.map((k) => ({ group: k, books: m.get(k)! }));
+  }, [filteredBooks]);
+
+  const showSectionHeader = groupFilter === "all" && uniqueGroupKeys.length > 1;
+
   return (
     <div
       style={{
@@ -221,46 +423,21 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
     >
       <div
         style={{
-          position: "fixed",
-          top: 16,
-          right: 16,
-          zIndex: 50,
-          display: "flex",
-          gap: 8,
-          alignItems: "center",
-          flexWrap: "wrap",
-          justifyContent: "flex-end",
-          maxWidth: "calc(100vw - 32px)",
-        }}
-      >
-        <ThemeModeButton />
-        <TypewriterSoundButton />
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          style={{
-            border: "1px solid var(--btn-border)",
-            borderRadius: 9,
-            background: "var(--btn-bg)",
-            color: "var(--text)",
-            padding: "8px 12px",
-            cursor: "pointer",
-            fontSize: 12,
-            lineHeight: 1.2,
-          }}
-        >
-          新建书籍
-        </button>
-      </div>
-
-      <div
-        style={{
           maxWidth: 960,
           margin: "0 auto",
           padding: "32px 24px 48px",
         }}
       >
-        <div style={{ marginBottom: 22 }}>
+        <div
+          style={{
+            marginBottom: 22,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
           <div>
             <div
               style={{
@@ -320,6 +497,27 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                 {librarySubtitle}
               </div>
             )}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <ThemeModeButton />
+            <TypewriterSoundButton />
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              style={{
+                border: "1px solid var(--btn-border)",
+                borderRadius: 9,
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                padding: "8px 12px",
+                cursor: "pointer",
+                fontSize: 12,
+                lineHeight: 1.2,
+              }}
+            >
+              新建书籍
+            </button>
           </div>
         </div>
 
@@ -530,218 +728,383 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
             还没有书籍。点击右上角「新建书籍」开始。
           </div>
         ) : (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "1fr",
-              gap: 14,
-            }}
-          >
-            {books.map((book) => {
-              const deleting = deletingBookId === book.id;
-              const confirming = confirmingBookId === book.id;
-              const renaming = renamingBookId === book.id;
-              const editingDescription = editingDescriptionBookId === book.id;
-
-              return (
-                <div
-                  key={book.id}
+          <>
+            <div
+              style={{
+                marginBottom: 12,
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                alignItems: "center",
+              }}
+            >
+              <span style={{ fontSize: 11, color: "var(--text-sub)" }}>筛选</span>
+              <button
+                type="button"
+                onClick={() => setGroupFilter("all")}
+                style={{
+                  border: `1px solid ${groupFilter === "all" ? "var(--accent)" : "var(--btn-border)"}`,
+                  borderRadius: 8,
+                  background: groupFilter === "all" ? "var(--accent-soft)" : "var(--btn-bg)",
+                  color: "var(--text)",
+                  padding: "4px 10px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                全部
+              </button>
+              {uniqueGroupKeys.map((g) => (
+                <button
+                  key={g}
+                  type="button"
+                  onClick={() => setGroupFilter(g)}
                   style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: 14,
-                    padding: 14,
-                    background: "var(--card)",
-                    boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 10,
+                    border: `1px solid ${groupFilter === g ? "var(--accent)" : "var(--btn-border)"}`,
+                    borderRadius: 8,
+                    background: groupFilter === g ? "var(--accent-soft)" : "var(--btn-bg)",
+                    color: "var(--text)",
+                    padding: "4px 10px",
+                    cursor: "pointer",
+                    fontSize: 11,
                   }}
                 >
+                  {g}
+                </button>
+              ))}
+            </div>
+
+            {bookSections.map(({ group: sectionGroup, books: sectionBooks }) => (
+              <div key={sectionGroup} style={{ marginBottom: 18 }}>
+                {showSectionHeader ? (
                   <div
                     style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "flex-start",
-                      gap: 8,
-                    }}
-                  >
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {renaming ? (
-                        <input
-                          autoFocus
-                          value={renameTitle}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => setRenameTitle(e.currentTarget.value)}
-                          onFocus={(e) => e.target.select()}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") {
-                              void handleSubmitRename(book);
-                            }
-                            if (e.key === "Escape") {
-                              setRenamingBookId(null);
-                              setRenameTitle("");
-                            }
-                          }}
-                          onBlur={() => {
-                            void handleSubmitRename(book);
-                          }}
-                          style={{
-                            width: "100%",
-                            boxSizing: "border-box",
-                            padding: "7px 9px",
-                            border: "1px solid var(--accent)",
-                            borderRadius: 8,
-                            fontSize: 14,
-                            fontWeight: 700,
-                            outline: "none",
-                            background: "var(--btn-bg)",
-                            color: "var(--text)",
-                          }}
-                        />
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => onOpenBook(book)}
-                          style={{
-                            width: "100%",
-                            textAlign: "left",
-                            border: "none",
-                            background: "transparent",
-                            padding: 0,
-                            cursor: "pointer",
-                            fontSize: 15,
-                            fontWeight: 700,
-                            color: "var(--text)",
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                          title={book.title}
-                        >
-                          {book.title}
-                        </button>
-                      )}
-                    </div>
-
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: 6,
-                        flexShrink: 0,
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRenamingBookId(book.id);
-                          setRenameTitle(book.title);
-                        }}
-                        style={{
-                          border: "1px solid var(--btn-border)",
-                          borderRadius: 8,
-                          background: "var(--btn-bg)",
-                          color: "var(--text)",
-                          padding: "5px 9px",
-                          cursor: "pointer",
-                          fontSize: 12,
-                        }}
-                      >
-                        改名
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (confirming) {
-                            void handleDeleteBook(book);
-                            return;
-                          }
-                          setConfirmingBookId(book.id);
-                        }}
-                        disabled={deleting}
-                        style={{
-                          border: "1px solid var(--btn-border)",
-                          borderRadius: 8,
-                          background: confirming ? "#fff4e5" : "var(--btn-bg)",
-                          color: "var(--text)",
-                          padding: "5px 9px",
-                          cursor: "pointer",
-                          fontSize: 12,
-                        }}
-                      >
-                        {deleting ? "..." : confirming ? "确认" : "删除"}
-                      </button>
-                    </div>
-                  </div>
-
-                  {editingDescription ? (
-                    <input
-                      autoFocus
-                      value={descriptionDraft}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setDescriptionDraft(e.currentTarget.value)}
-                      onBlur={() => {
-                        submitDescription(book.id);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          submitDescription(book.id);
-                        }
-                        if (e.key === "Escape") {
-                          setEditingDescriptionBookId(null);
-                          setDescriptionDraft("");
-                        }
-                      }}
-                      style={{
-                        width: "100%",
-                        boxSizing: "border-box",
-                        padding: "6px 8px",
-                        border: "1px solid var(--btn-border)",
-                        borderRadius: 8,
-                        fontSize: 12,
-                        outline: "none",
-                        background: "var(--btn-bg)",
-                        color: "var(--text-sub)",
-                      }}
-                    />
-                  ) : (
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        startEditDescription(book.id);
-                      }}
-                      style={{
-                        fontSize: 12,
-                        color: "var(--text-sub)",
-                        lineHeight: 1.6,
-                        cursor: "text",
-                        display: "inline-block",
-                        width: "fit-content",
-                        padding: "2px 0",
-                      }}
-                    >
-                      {bookDescriptions[book.id] || "本地书籍文件夹"}
-                    </div>
-                  )}
-
-                  <div
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 4,
-                      color: "var(--text-sub)",
+                      marginBottom: 8,
                       fontSize: 12,
-                      lineHeight: 1.5,
+                      fontWeight: 600,
+                      color: "var(--text-sub)",
                     }}
                   >
-                    <div>文件夹：{book.folderName}</div>
-                    <div>文档数：{book.documentCount}</div>
-                    <div>更新：{book.updatedAt}</div>
+                    {sectionGroup}
                   </div>
+                ) : null}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr",
+                    gap: 14,
+                  }}
+                >
+                  {sectionBooks.map((book) => {
+                    const deleting = deletingBookId === book.id;
+                    const confirming = confirmingBookId === book.id;
+                    const renaming = renamingBookId === book.id;
+                    const editingDescription = editingDescriptionBookId === book.id;
+
+                    return (
+                      <div
+                        key={book.id}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{
+                          border: "1px solid var(--border)",
+                          borderRadius: 14,
+                          padding: 14,
+                          background: "var(--card)",
+                          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 10,
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 12,
+                            alignItems: "flex-start",
+                          }}
+                        >
+                          <BookCoverSlot
+                            coverPath={book.coverPath}
+                            bookFolderPath={book.folderPath}
+                            coverDataBust={coverDataBust[book.id] ?? 0}
+                            canInteract={isTauri()}
+                            onPick={() => {
+                              void handlePickCover(book);
+                            }}
+                            onClear={() => {
+                              void handleClearCover(book);
+                            }}
+                          />
+
+                          <div
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              display: "flex",
+                              flexDirection: "column",
+                              gap: 8,
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "flex-start",
+                                gap: 8,
+                              }}
+                            >
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                {renaming ? (
+                                  <input
+                                    autoFocus
+                                    value={renameTitle}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) => setRenameTitle(e.currentTarget.value)}
+                                    onFocus={(e) => e.target.select()}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        void handleSubmitRename(book);
+                                      }
+                                      if (e.key === "Escape") {
+                                        setRenamingBookId(null);
+                                        setRenameTitle("");
+                                      }
+                                    }}
+                                    onBlur={() => {
+                                      void handleSubmitRename(book);
+                                    }}
+                                    style={{
+                                      width: "100%",
+                                      boxSizing: "border-box",
+                                      padding: "7px 9px",
+                                      border: "1px solid var(--accent)",
+                                      borderRadius: 8,
+                                      fontSize: 14,
+                                      fontWeight: 700,
+                                      outline: "none",
+                                      background: "var(--btn-bg)",
+                                      color: "var(--text)",
+                                    }}
+                                  />
+                                ) : (
+                                  <div
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      if (e.detail === 2) {
+                                        if (titleClickTimerRef.current) {
+                                          clearTimeout(titleClickTimerRef.current);
+                                          titleClickTimerRef.current = null;
+                                        }
+                                        onOpenBook(book);
+                                        return;
+                                      }
+                                      if (e.detail === 1) {
+                                        titleClickTimerRef.current = setTimeout(() => {
+                                          titleClickTimerRef.current = null;
+                                          setRenamingBookId(book.id);
+                                          setRenameTitle(book.title);
+                                        }, 220);
+                                      }
+                                    }}
+                                    style={{
+                                      width: "100%",
+                                      textAlign: "left",
+                                      fontSize: 15,
+                                      fontWeight: 700,
+                                      color: "var(--text)",
+                                      whiteSpace: "nowrap",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      cursor: "pointer",
+                                    }}
+                                    title={`${book.title}（单击改名，双击打开）`}
+                                  >
+                                    {book.title}
+                                  </div>
+                                )}
+                              </div>
+
+                              <div
+                                style={{
+                                  display: "flex",
+                                  gap: 6,
+                                  flexShrink: 0,
+                                  flexWrap: "wrap",
+                                  justifyContent: "flex-end",
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (confirming) {
+                                      void handleDeleteBook(book);
+                                      return;
+                                    }
+                                    setConfirmingBookId(book.id);
+                                  }}
+                                  disabled={deleting}
+                                  style={{
+                                    border: "1px solid var(--btn-border)",
+                                    borderRadius: 8,
+                                    background: confirming ? "#fff4e5" : "var(--btn-bg)",
+                                    color: "var(--text)",
+                                    padding: "5px 9px",
+                                    cursor: "pointer",
+                                    fontSize: 12,
+                                  }}
+                                >
+                                  {deleting ? "..." : confirming ? "确认" : "删除"}
+                                </button>
+                              </div>
+                            </div>
+
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                flexWrap: "wrap",
+                                fontSize: 12,
+                              }}
+                            >
+                              <span style={{ color: "var(--text-sub)" }}>分组</span>
+                              {isTauri() ? (
+                                editingGroupBookId === book.id ? (
+                                  <input
+                                    autoFocus
+                                    value={groupDraft}
+                                    onClick={(e) => e.stopPropagation()}
+                                    onChange={(e) => setGroupDraft(e.currentTarget.value)}
+                                    placeholder="分组名称，留空为未分组"
+                                    onBlur={() => {
+                                      void handleSubmitGroup(book);
+                                    }}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") {
+                                        void handleSubmitGroup(book);
+                                      }
+                                      if (e.key === "Escape") {
+                                        groupEditCancelledRef.current = true;
+                                        setEditingGroupBookId(null);
+                                        setGroupDraft("");
+                                      }
+                                    }}
+                                    style={{
+                                      flex: 1,
+                                      minWidth: 120,
+                                      maxWidth: 280,
+                                      boxSizing: "border-box",
+                                      padding: "5px 8px",
+                                      border: "1px solid var(--accent)",
+                                      borderRadius: 8,
+                                      fontSize: 12,
+                                      outline: "none",
+                                      background: "var(--btn-bg)",
+                                      color: "var(--text)",
+                                    }}
+                                  />
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      groupEditCancelledRef.current = false;
+                                      setEditingGroupBookId(book.id);
+                                      setGroupDraft((book.group ?? "").trim());
+                                    }}
+                                    style={{
+                                      border: "1px dashed var(--btn-border)",
+                                      borderRadius: 8,
+                                      background: "transparent",
+                                      color: "var(--text-sub)",
+                                      padding: "4px 10px",
+                                      cursor: "pointer",
+                                      fontSize: 12,
+                                      textAlign: "left",
+                                    }}
+                                  >
+                                    {displayGroupName(book.group)}
+                                  </button>
+                                )
+                              ) : (
+                                <span style={{ color: "var(--text-sub)" }}>
+                                  {displayGroupName(book.group)}
+                                </span>
+                              )}
+                            </div>
+
+                            {editingDescription ? (
+                              <input
+                                autoFocus
+                                value={descriptionDraft}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => setDescriptionDraft(e.currentTarget.value)}
+                                onBlur={() => {
+                                  submitDescription(book.id);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    submitDescription(book.id);
+                                  }
+                                  if (e.key === "Escape") {
+                                    setEditingDescriptionBookId(null);
+                                    setDescriptionDraft("");
+                                  }
+                                }}
+                                style={{
+                                  width: "100%",
+                                  boxSizing: "border-box",
+                                  padding: "6px 8px",
+                                  border: "1px solid var(--btn-border)",
+                                  borderRadius: 8,
+                                  fontSize: 12,
+                                  outline: "none",
+                                  background: "var(--btn-bg)",
+                                  color: "var(--text-sub)",
+                                }}
+                              />
+                            ) : (
+                              <div
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  startEditDescription(book.id);
+                                }}
+                                style={{
+                                  fontSize: 12,
+                                  color: "var(--text-sub)",
+                                  lineHeight: 1.6,
+                                  cursor: "text",
+                                  display: "inline-block",
+                                  width: "fit-content",
+                                  padding: "2px 0",
+                                }}
+                              >
+                                {bookDescriptions[book.id] || "本地书籍文件夹"}
+                              </div>
+                            )}
+
+                            <div
+                              style={{
+                                display: "flex",
+                                flexDirection: "column",
+                                gap: 4,
+                                color: "var(--text-sub)",
+                                fontSize: 12,
+                                lineHeight: 1.5,
+                              }}
+                            >
+                              <div>文件夹：{book.folderName}</div>
+                              <div>文档数：{book.documentCount}</div>
+                              <div>更新：{book.updatedAt}</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              );
-            })}
-          </div>
+              </div>
+            ))}
+          </>
         )}
       </div>
     </div>

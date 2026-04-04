@@ -1,4 +1,5 @@
-use serde::Serialize;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,19 @@ pub struct BookItem {
     pub folder_path: String,
     pub updated_at: String,
     pub document_count: usize,
+    /// 分组名，空字符串表示未分组
+    pub group: String,
+    /// 封面文件绝对路径（存在时）
+    pub cover_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct BookMeta {
+    #[serde(default)]
+    group: String,
+    #[serde(default)]
+    cover_file: Option<String>,
 }
 
 fn get_books_root() -> Result<PathBuf, String> {
@@ -31,6 +45,27 @@ fn ensure_books_root() -> Result<PathBuf, String> {
     }
 
     Ok(root)
+}
+
+fn glyph_dir(book_dir: &Path) -> PathBuf {
+    book_dir.join(".glyph")
+}
+
+fn read_meta(book_dir: &Path) -> BookMeta {
+    let path = glyph_dir(book_dir).join("meta.json");
+    if let Ok(bytes) = fs::read(&path) {
+        if let Ok(m) = serde_json::from_slice::<BookMeta>(&bytes) {
+            return m;
+        }
+    }
+    BookMeta::default()
+}
+
+fn write_meta(book_dir: &Path, meta: &BookMeta) -> Result<(), String> {
+    let dir = glyph_dir(book_dir);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建 .glyph 失败: {}", e))?;
+    let json = serde_json::to_string_pretty(meta).map_err(|e| e.to_string())?;
+    fs::write(dir.join("meta.json"), json).map_err(|e| e.to_string())
 }
 
 fn count_markdown_files(dir: &Path) -> usize {
@@ -73,6 +108,18 @@ fn build_book_item(path: &Path) -> Result<BookItem, String> {
 
     let document_count = count_markdown_files(path);
     let updated_at = format_modified_date(path);
+    let meta = read_meta(path);
+
+    let cover_path = if let Some(ref name) = meta.cover_file {
+        let p = glyph_dir(path).join(name);
+        if p.is_file() {
+            Some(p.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     Ok(BookItem {
         id: folder_name.clone(),
@@ -82,6 +129,8 @@ fn build_book_item(path: &Path) -> Result<BookItem, String> {
         folder_path: path.to_string_lossy().to_string(),
         updated_at,
         document_count,
+        group: meta.group,
+        cover_path,
     })
 }
 
@@ -137,6 +186,9 @@ pub fn create_book(title: String) -> Result<BookItem, String> {
     let default_doc_path = book_dir.join("未命名.md");
     fs::write(&default_doc_path, "").map_err(|e| format!("创建默认文档失败: {}", e))?;
 
+    let meta = BookMeta::default();
+    write_meta(&book_dir, &meta)?;
+
     build_book_item(&book_dir)
 }
 
@@ -183,4 +235,94 @@ pub fn rename_book(folder_path: String, new_title: String) -> Result<bool, Strin
     fs::rename(&old_path, &new_path).map_err(|e| format!("重命名失败: {}", e))?;
 
     Ok(true)
+}
+
+pub fn set_book_group(book_folder_path: String, group: String) -> Result<(), String> {
+    let book_dir = PathBuf::from(&book_folder_path);
+    if !book_dir.is_dir() {
+        return Err("书籍不存在".to_string());
+    }
+    let mut meta = read_meta(&book_dir);
+    meta.group = group.trim().to_string();
+    write_meta(&book_dir, &meta)
+}
+
+pub fn set_cover_from_file(book_folder_path: String, source_image_path: String) -> Result<String, String> {
+    let book_dir = PathBuf::from(&book_folder_path);
+    if !book_dir.is_dir() {
+        return Err("书籍不存在".to_string());
+    }
+    let src = PathBuf::from(&source_image_path);
+    if !src.is_file() {
+        return Err("源文件不存在".to_string());
+    }
+
+    let ext = src
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("jpg")
+        .to_lowercase();
+    let ext = if ext.is_empty() { "jpg".to_string() } else { ext };
+
+    let glyph = glyph_dir(&book_dir);
+    fs::create_dir_all(&glyph).map_err(|e| format!("创建 .glyph 失败: {}", e))?;
+
+    let dest_name = format!("cover.{ext}");
+    let dest = glyph.join(&dest_name);
+    fs::copy(&src, &dest).map_err(|e| format!("复制封面失败: {}", e))?;
+
+    let mut meta = read_meta(&book_dir);
+    meta.cover_file = Some(dest_name);
+    write_meta(&book_dir, &meta)?;
+
+    Ok(dest.to_string_lossy().to_string())
+}
+
+/// 读取封面文件为 `data:<mime>;base64,...`，供前端 `<img>` 使用（不依赖 asset 协议）。
+pub fn get_cover_data_url(book_folder_path: String) -> Result<Option<String>, String> {
+    let book_dir = PathBuf::from(&book_folder_path);
+    if !book_dir.is_dir() {
+        return Err("书籍不存在".to_string());
+    }
+    let meta = read_meta(&book_dir);
+    let Some(ref name) = meta.cover_file else {
+        return Ok(None);
+    };
+    let p = glyph_dir(&book_dir).join(name);
+    if !p.is_file() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&p).map_err(|e| format!("读取封面失败: {}", e))?;
+    const MAX: usize = 15 * 1024 * 1024;
+    if bytes.len() > MAX {
+        return Err("封面文件过大".to_string());
+    }
+    let mime = mime_for_image_ext(p.extension().and_then(|s| s.to_str()));
+    let b64 = STANDARD.encode(&bytes);
+    Ok(Some(format!("data:{mime};base64,{b64}")))
+}
+
+fn mime_for_image_ext(ext: Option<&str>) -> &'static str {
+    match ext.map(|e| e.to_lowercase()).as_deref() {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        _ => "image/jpeg",
+    }
+}
+
+pub fn clear_book_cover(book_folder_path: String) -> Result<(), String> {
+    let book_dir = PathBuf::from(&book_folder_path);
+    if !book_dir.is_dir() {
+        return Err("书籍不存在".to_string());
+    }
+    let mut meta = read_meta(&book_dir);
+    if let Some(ref name) = meta.cover_file {
+        let p = glyph_dir(&book_dir).join(name);
+        let _ = fs::remove_file(p);
+    }
+    meta.cover_file = None;
+    write_meta(&book_dir, &meta)
 }
