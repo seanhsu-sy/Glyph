@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   appendWritingLog,
   getWritingSummaryByDate,
@@ -22,7 +22,11 @@ const IDLE_THRESHOLD = 30_000;
 const MIN_DURATION = 3_000;
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = `${now.getMonth() + 1}`.padStart(2, "0");
+  const d = `${now.getDate()}`.padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 export function useWritingTracker({ bookId, filePath, wordCount }: Params) {
@@ -34,64 +38,61 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params) {
 
   const setTodaySummary = useWritingStatsStore((s) => s.setTodaySummary);
 
-  async function refreshTodaySummary() {
-    const summary = await getWritingSummaryByDate(todayStr());
-    setTodaySummary(summary);
-  }
+  const refreshTodaySummary = useCallback(async () => {
+    try {
+      const summary = await getWritingSummaryByDate(todayStr(), bookId);
+      setTodaySummary(summary);
+    } catch (err) {
+      console.error("refreshTodaySummary failed", err);
+    }
+  }, [bookId, setTodaySummary]);
 
-  async function flushSession(docPath: string, force = false) {
+  async function flushSession(docPath: string) {
     const session = sessionsRef.current[docPath];
     if (!session) return;
 
     const duration = session.lastTime - session.startTime;
     const wordDelta = session.lastWordCount - session.startWordCount;
 
-    if (duration < MIN_DURATION) {
+    if (duration < MIN_DURATION || wordDelta === 0) {
       delete sessionsRef.current[docPath];
       return;
     }
 
-    if (!force && wordDelta <= 0) {
-      return;
-    }
-
-    if (wordDelta <= 0) {
+    try {
+      await appendWritingLog({
+        bookId,
+        docPath,
+        date: todayStr(),
+        startTime: session.startTime,
+        endTime: session.lastTime,
+        durationMs: duration,
+        wordDelta,
+      });
+    } catch (err) {
+      console.error("appendWritingLog failed", err);
+    } finally {
       delete sessionsRef.current[docPath];
-      return;
+      await refreshTodaySummary();
     }
-
-    await appendWritingLog({
-      bookId,
-      docPath,
-      date: todayStr(),
-      startTime: session.startTime,
-      endTime: session.lastTime,
-      durationMs: duration,
-      wordDelta,
-    });
-
-    delete sessionsRef.current[docPath];
-    await refreshTodaySummary();
   }
 
   useEffect(() => {
     void refreshTodaySummary();
-  }, []);
+  }, [refreshTodaySummary]);
 
   useEffect(() => {
     const prev = prevRef.current;
 
     if (prev.filePath && prev.filePath !== filePath) {
-      void flushSession(prev.filePath, true);
+      void flushSession(prev.filePath);
     }
 
     prevRef.current = { filePath, wordCount };
   }, [filePath, wordCount]);
 
   useEffect(() => {
-    if (!filePath) {
-      return;
-    }
+    if (!filePath) return;
 
     const now = Date.now();
     const session = sessionsRef.current[filePath];
@@ -107,7 +108,7 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params) {
     }
 
     if (now - session.lastTime > IDLE_THRESHOLD) {
-      void flushSession(filePath, true);
+      void flushSession(filePath);
 
       sessionsRef.current[filePath] = {
         startTime: now,
@@ -125,7 +126,7 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params) {
   useEffect(() => {
     return () => {
       Object.keys(sessionsRef.current).forEach((docPath) => {
-        void flushSession(docPath, true);
+        void flushSession(docPath);
       });
     };
   }, []);

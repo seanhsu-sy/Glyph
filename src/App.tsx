@@ -8,6 +8,24 @@ import { useThemeStore } from "./app/store/themeStore";
 
 type AppPage = "library" | "editor" | "stats";
 
+function AppShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        height: "100%",
+        width: "100%",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function App() {
   const [page, setPage] = useState<AppPage>("library");
   const [selectedBook, setSelectedBook] = useState<Book | null>(null);
@@ -19,36 +37,42 @@ function App() {
 
   if (page === "editor" && selectedBook) {
     return (
-      <EditorPage
-        book={selectedBook}
-        onBack={() => {
-          setSelectedBook(null);
-          setPage("library");
-        }}
-      />
+      <AppShell>
+        <EditorPage
+          book={selectedBook}
+          onBack={() => {
+            setSelectedBook(null);
+            setPage("library");
+          }}
+        />
+      </AppShell>
     );
   }
 
   if (page === "stats") {
     return (
-      <StatisticsPage
-        onBack={() => {
-          setPage("library");
-        }}
-      />
+      <AppShell>
+        <StatisticsPage
+          onBack={() => {
+            setPage("library");
+          }}
+        />
+      </AppShell>
     );
   }
 
   return (
-    <BookListPage
-      onOpenBook={(book) => {
-        setSelectedBook(book);
-        setPage("editor");
-      }}
-      onOpenStats={() => {
-        setPage("stats");
-      }}
-    />
+    <AppShell>
+      <BookListPage
+        onOpenBook={(book) => {
+          setSelectedBook(book);
+          setPage("editor");
+        }}
+        onOpenStats={() => {
+          setPage("stats");
+        }}
+      />
+    </AppShell>
   );
 }
 

@@ -59,9 +59,11 @@ export async function appendWritingLog(input: WritingLogInput): Promise<void> {
 
 export async function getWritingSummaryByDate(
   date: string,
+  bookId?: string,
 ): Promise<DailyWritingSummary> {
   return await invoke<DailyWritingSummary>("get_writing_summary_by_date", {
     date,
+    bookId: bookId ?? null,
   });
 }
 

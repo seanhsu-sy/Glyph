@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { useEditorStore } from "../app/store/editorStore";
 import { useTabStore } from "../app/store/tabStore";
@@ -102,6 +102,12 @@ function getTargetStorageKey(bookId: string) {
   return `writing_target_${bookId}`;
 }
 
+const SIDE_PANEL_WIDTH_KEY = "glyph_editor_side_panel_width_px";
+const MIN_EDITOR_SPLIT_W = 200;
+const MIN_SIDE_W = 200;
+const DEFAULT_SIDE_W = 320;
+const SPLIT_DIVIDER_W = 6;
+
 export function EditorPage({ book, onBack }: EditorPageProps) {
   const content = useEditorStore((s) => s.content);
   const filePath = useEditorStore((s) => s.filePath);
@@ -167,6 +173,15 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
 
   const [dailyTarget, setDailyTarget] = useState(2000);
 
+  const [sidePanelWidthPx, setSidePanelWidthPx] = useState(() => {
+    const saved = localStorage.getItem(SIDE_PANEL_WIDTH_KEY);
+    const n = saved ? Number(saved) : NaN;
+    if (Number.isFinite(n) && n >= MIN_SIDE_W) return Math.round(n);
+    return DEFAULT_SIDE_W;
+  });
+  const rowContainerRef = useRef<HTMLDivElement>(null);
+  const draggingSplitRef = useRef(false);
+
   const showSidePanel = sidePanelOpen;
   const showToolRail = toolRailOpen && !showSidePanel;
 
@@ -175,6 +190,45 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
     filePath,
     wordCount: liveWordCount,
   });
+
+  useEffect(() => {
+    localStorage.setItem(SIDE_PANEL_WIDTH_KEY, String(sidePanelWidthPx));
+  }, [sidePanelWidthPx]);
+
+  useLayoutEffect(() => {
+    if (!showSidePanel || !rowContainerRef.current) return;
+    const rect = rowContainerRef.current.getBoundingClientRect();
+    const maxW = Math.max(
+      MIN_SIDE_W,
+      rect.width - MIN_EDITOR_SPLIT_W - SPLIT_DIVIDER_W,
+    );
+    setSidePanelWidthPx((w) => Math.min(Math.max(MIN_SIDE_W, w), maxW));
+  }, [showSidePanel]);
+
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      if (!draggingSplitRef.current || !rowContainerRef.current) return;
+      const rect = rowContainerRef.current.getBoundingClientRect();
+      const maxW = Math.max(
+        MIN_SIDE_W,
+        rect.width - MIN_EDITOR_SPLIT_W - SPLIT_DIVIDER_W,
+      );
+      const raw = rect.right - e.clientX;
+      const clamped = Math.min(Math.max(MIN_SIDE_W, raw), maxW);
+      setSidePanelWidthPx(clamped);
+    };
+    const onUp = () => {
+      draggingSplitRef.current = false;
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
 
   useEffect(() => {
     const saved = localStorage.getItem(getTargetStorageKey(book.id));
@@ -820,11 +874,14 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
     <div
       style={{
         display: "flex",
+        flex: 1,
         width: "100%",
+        minHeight: 0,
         height: "100%",
         background: "var(--bg)",
         color: "var(--text)",
         position: "relative",
+        overflow: "hidden",
       }}
     >
       {libraryOpen ? (
@@ -1102,8 +1159,11 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
         <Toolbar mode="global" />
 
         <div
+          ref={rowContainerRef}
           style={{
             display: "flex",
+            flexDirection: "row",
+            alignItems: "stretch",
             flex: 1,
             minHeight: 0,
             width: "100%",
@@ -1113,7 +1173,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
           <div
             style={{
               flex: 1,
-              minWidth: 0,
+              minWidth: MIN_EDITOR_SPLIT_W,
               display: "flex",
               flexDirection: "column",
               minHeight: 0,
@@ -1134,17 +1194,40 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
           </div>
 
           {showSidePanel ? (
-            <div
-              style={{
-                flex: 1,
-                minWidth: 0,
-                borderLeft: "1px solid var(--border)",
-                background: "var(--panel-bg)",
-                display: "flex",
-                flexDirection: "column",
-                minHeight: 0,
-              }}
-            >
+            <>
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-valuenow={sidePanelWidthPx}
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  draggingSplitRef.current = true;
+                  (e.currentTarget as HTMLDivElement).setPointerCapture(
+                    e.pointerId,
+                  );
+                }}
+                style={{
+                  width: SPLIT_DIVIDER_W,
+                  flexShrink: 0,
+                  cursor: "col-resize",
+                  touchAction: "none",
+                  userSelect: "none",
+                  background: "var(--border)",
+                }}
+              />
+              <div
+                style={{
+                  width: sidePanelWidthPx,
+                  minWidth: MIN_SIDE_W,
+                  flexShrink: 0,
+                  alignSelf: "stretch",
+                  background: "var(--panel-bg)",
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 0,
+                  overflow: "hidden",
+                }}
+              >
               <div
                 style={{
                   display: "flex",
@@ -1266,24 +1349,57 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                 style={{
                   flex: 1,
                   minHeight: 0,
-                  overflow: "auto",
+                  minWidth: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  overflow: "hidden",
                   padding: 10,
                   background: "var(--panel-bg)",
                   color: "var(--text)",
                 }}
               >
                 {sidePanelMode === "preview" ? (
-                  <MarkdownPreview content={content} />
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      overflow: "auto",
+                    }}
+                  >
+                    <MarkdownPreview content={content} />
+                  </div>
                 ) : sidePanelMode === "outline" ? (
-                  <OutlinePanel docs={outlineDocs} currentFilePath={filePath} />
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      minWidth: 0,
+                      display: "flex",
+                      flexDirection: "column",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <OutlinePanel docs={outlineDocs} currentFilePath={filePath} />
+                  </div>
                 ) : sidePanelMode === "references" ? (
-                  <ReferencesPanel />
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      overflow: "auto",
+                    }}
+                  >
+                    <ReferencesPanel />
+                  </div>
                 ) : sidePanelMode === "search" ? (
                   <div
                     style={{
+                      flex: 1,
+                      minHeight: 0,
                       display: "flex",
                       flexDirection: "column",
                       gap: 10,
+                      overflow: "hidden",
                     }}
                   >
                     <input
@@ -1317,7 +1433,16 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                         没有找到结果
                       </div>
                     ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div
+                        style={{
+                          flex: 1,
+                          minHeight: 0,
+                          overflow: "auto",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                        }}
+                      >
                         {searchResults.map((item) => (
                           <button
                             key={item.doc.path}
@@ -1386,6 +1511,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                 ) : null}
               </div>
             </div>
+            </>
           ) : showToolRail ? (
             <div
               style={{

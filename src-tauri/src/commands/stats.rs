@@ -5,6 +5,9 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 
+use crate::services::book_service;
+use crate::services::document_service;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WritingLog {
@@ -118,6 +121,27 @@ fn filter_logs_by_book(logs: Vec<WritingLog>, book_id: Option<String>) -> Vec<Wr
     }
 }
 
+fn total_net_words_from_files(book_id: Option<&String>) -> Result<i64, String> {
+    match book_id {
+        Some(id) => {
+            let books = book_service::list_books()?;
+            let book = books
+                .into_iter()
+                .find(|b| &b.id == id)
+                .ok_or_else(|| "书籍不存在".to_string())?;
+            document_service::sum_word_count_for_book_path(book.folder_path)
+        }
+        None => {
+            let books = book_service::list_books()?;
+            let mut sum = 0_i64;
+            for b in books {
+                sum += document_service::sum_word_count_for_book_path(b.folder_path)?;
+            }
+            Ok(sum)
+        }
+    }
+}
+
 fn build_daily_stats_from_logs(logs: &[WritingLog]) -> Vec<DailyStat> {
     let mut map: BTreeMap<String, DailyStat> = BTreeMap::new();
 
@@ -138,11 +162,16 @@ fn build_daily_stats_from_logs(logs: &[WritingLog]) -> Vec<DailyStat> {
 }
 
 fn calculate_streaks(daily_stats: &[DailyStat]) -> (i64, i64) {
-    if daily_stats.is_empty() {
+    let positive_days: Vec<&DailyStat> = daily_stats
+        .iter()
+        .filter(|item| item.total_words > 0)
+        .collect();
+
+    if positive_days.is_empty() {
         return (0, 0);
     }
 
-    let mut dates: Vec<NaiveDate> = daily_stats
+    let mut dates: Vec<NaiveDate> = positive_days
         .iter()
         .filter_map(|item| NaiveDate::parse_from_str(&item.date, "%Y-%m-%d").ok())
         .collect();
@@ -204,8 +233,8 @@ pub fn append_writing_log(app: AppHandle, input: WritingLogInput) -> Result<(), 
         return Err("durationMs 必须大于 0".to_string());
     }
 
-    if input.word_delta <= 0 {
-        return Err("wordDelta 必须大于 0".to_string());
+    if input.word_delta == 0 {
+        return Err("wordDelta 不能为 0".to_string());
     }
 
     let path = stats_file_path(&app)?;
@@ -230,15 +259,17 @@ pub fn append_writing_log(app: AppHandle, input: WritingLogInput) -> Result<(), 
 pub fn get_writing_summary_by_date(
     app: AppHandle,
     date: String,
+    book_id: Option<String>,
 ) -> Result<DailyWritingSummary, String> {
     let path = stats_file_path(&app)?;
     let file = read_log_file(&path)?;
+    let logs = filter_logs_by_book(file.logs, book_id);
 
     let mut total_words = 0_i64;
     let mut total_duration_ms = 0_i64;
     let mut sessions = 0_i64;
 
-    for log in file.logs.iter().filter(|log| log.date == date) {
+    for log in logs.iter().filter(|log| log.date == date) {
         total_words += log.word_delta;
         total_duration_ms += log.duration_ms;
         sessions += 1;
@@ -290,17 +321,23 @@ pub fn get_stats_overview(
 ) -> Result<StatsOverview, String> {
     let path = stats_file_path(&app)?;
     let file = read_log_file(&path)?;
+
+    let total_words = total_net_words_from_files(book_id.as_ref())?;
     let logs = filter_logs_by_book(file.logs, book_id);
 
     let daily_stats = build_daily_stats_from_logs(&logs);
-
-    let total_words: i64 = logs.iter().map(|log| log.word_delta).sum();
     let total_duration_ms: i64 = logs.iter().map(|log| log.duration_ms).sum();
     let total_sessions = logs.len() as i64;
-    let total_writing_days = daily_stats.len() as i64;
 
-    let average_words_per_day = if total_writing_days > 0 {
-        total_words / total_writing_days
+    let positive_days_count = daily_stats.iter().filter(|item| item.total_words > 0).count() as i64;
+
+    let average_words_per_day = if positive_days_count > 0 {
+        let positive_word_sum: i64 = daily_stats
+            .iter()
+            .filter(|item| item.total_words > 0)
+            .map(|item| item.total_words)
+            .sum();
+        positive_word_sum / positive_days_count
     } else {
         0
     };
@@ -311,7 +348,7 @@ pub fn get_stats_overview(
         total_words,
         total_duration_ms,
         total_sessions,
-        total_writing_days,
+        total_writing_days: positive_days_count,
         current_streak_days,
         longest_streak_days,
         average_words_per_day,

@@ -79,6 +79,12 @@ fn build_document_item(path: &Path) -> Result<DocumentItem, String> {
     })
 }
 
+/// Sum of per-document word counts (same algorithm as `list_documents`), i.e. current net text volume.
+pub fn sum_word_count_for_book_path(book_path: String) -> Result<i64, String> {
+    let docs = list_documents(book_path)?;
+    Ok(docs.iter().map(|d| d.word_count as i64).sum())
+}
+
 pub fn list_documents(book_path: String) -> Result<Vec<DocumentItem>, String> {
     let path = Path::new(&book_path);
 

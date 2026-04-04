@@ -1,9 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getDailyStats,
-  getMonthlyStats,
   getStatsOverview,
-  getWeeklyStats,
   getWritingLogsByDate,
   type WritingLog,
 } from "../../../shared/lib/stats";
@@ -13,21 +11,11 @@ type StatisticsPanelProps = {
   books: Book[];
 };
 
-type PeriodMode = "week" | "month";
-
 type DailyStat = {
   date: string;
   totalWords: number;
   totalDurationMs: number;
   sessions: number;
-};
-
-type PeriodStat = {
-  label: string;
-  totalWords: number;
-  totalDurationMs: number;
-  sessions: number;
-  activeDays: number;
 };
 
 type StatsOverview = {
@@ -69,10 +57,11 @@ function formatSpeed(words: number, durationMs: number) {
 }
 
 function getIntensity(words: number) {
-  if (words >= 2000) return "level-4";
-  if (words >= 1200) return "level-3";
-  if (words >= 500) return "level-2";
-  if (words > 0) return "level-1";
+  const w = Math.max(0, words);
+  if (w >= 2000) return "level-4";
+  if (w >= 1200) return "level-3";
+  if (w >= 500) return "level-2";
+  if (w > 0) return "level-1";
   return "level-0";
 }
 
@@ -120,6 +109,22 @@ function buildLastNDays(stats: DailyStat[], days: number) {
   }
 
   return result;
+}
+
+function summarizeRollingWindow(stats: DailyStat[]) {
+  const totalWords = stats.reduce((sum, item) => sum + item.totalWords, 0);
+  const totalDurationMs = stats.reduce((sum, item) => sum + item.totalDurationMs, 0);
+  const activeDays = stats.filter((item) => item.sessions > 0).length;
+  const windowDays = stats.length;
+  const avgWordsPerDay =
+    windowDays > 0 ? Math.round(totalWords / windowDays) : 0;
+
+  return {
+    totalWords,
+    totalDurationMs,
+    activeDays,
+    avgWordsPerDay,
+  };
 }
 
 function startOfWeekMonday(date: Date) {
@@ -231,13 +236,9 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
 
   const [overview, setOverview] = useState<StatsOverview | null>(null);
   const [dailyStats, setDailyStats] = useState<DailyStat[]>([]);
-  const [weeklyStats, setWeeklyStats] = useState<PeriodStat[]>([]);
-  const [monthlyStats, setMonthlyStats] = useState<PeriodStat[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const [periodMode, setPeriodMode] = useState<PeriodMode>("week");
   const [dailyTarget, setDailyTarget] = useState(2000);
   const [targetInput, setTargetInput] = useState("2000");
 
@@ -277,19 +278,15 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
 
         const bookId = selectedBookId === "all" ? undefined : selectedBookId;
 
-        const [overviewData, dailyData, weeklyData, monthlyData] = await Promise.all([
+        const [overviewData, dailyData] = await Promise.all([
           getStatsOverview(bookId),
           getDailyStats(bookId),
-          getWeeklyStats(bookId),
-          getMonthlyStats(bookId),
         ]);
 
         if (cancelled) return;
 
         setOverview(overviewData);
         setDailyStats(dailyData);
-        setWeeklyStats(weeklyData);
-        setMonthlyStats(monthlyData);
       } catch (err) {
         if (!cancelled) {
           setError(String(err));
@@ -308,17 +305,12 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
     };
   }, [selectedBookId]);
 
-  const currentPeriodStats = useMemo(
-    () => (periodMode === "week" ? weeklyStats : monthlyStats),
-    [periodMode, weeklyStats, monthlyStats],
-  );
-
-  const recentPeriodStats = useMemo(
-    () => currentPeriodStats.slice(-8).reverse(),
-    [currentPeriodStats],
-  );
-
   const trendStats = useMemo(() => buildLastNDays(dailyStats, 14), [dailyStats]);
+  const rolling7 = useMemo(() => buildLastNDays(dailyStats, 7), [dailyStats]);
+  const rolling30 = useMemo(() => buildLastNDays(dailyStats, 30), [dailyStats]);
+
+  const recent7 = useMemo(() => summarizeRollingWindow(rolling7), [rolling7]);
+  const recent30 = useMemo(() => summarizeRollingWindow(rolling30), [rolling30]);
   const calendarSourceStats = useMemo(() => buildLastNDays(dailyStats, 365), [dailyStats]);
   const calendarData = useMemo(() => buildTwelveMonthCalendar(dailyStats), [dailyStats]);
 
@@ -329,7 +321,9 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
   const todayDurationMs = todayStat?.totalDurationMs ?? 0;
 
   const progressPercent =
-    dailyTarget > 0 ? Math.min(100, Math.round((todayWords / dailyTarget) * 100)) : 0;
+    dailyTarget > 0
+      ? Math.min(100, Math.round((Math.max(0, todayWords) / dailyTarget) * 100))
+      : 0;
   const remainingWords = Math.max(0, dailyTarget - todayWords);
 
   const applyTarget = () => {
@@ -515,70 +509,6 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
             outline: 2px solid rgba(59,130,246,0.95);
             outline-offset: 1px;
           }
-
-          .stats-segment-switch {
-            display: inline-flex;
-            gap: 4px;
-            padding: 4px;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            background: var(--btn-bg);
-          }
-
-          .stats-segment-btn {
-            border: none;
-            border-radius: 8px;
-            padding: 6px 10px;
-            cursor: pointer;
-            font-size: 11px;
-            color: var(--text);
-            background: transparent;
-          }
-
-          .stats-segment-btn.active {
-            background: rgba(59,130,246,0.12);
-            box-shadow: inset 0 0 0 1px rgba(59,130,246,0.18);
-          }
-
-          .stats-period-list {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-          }
-
-          .stats-period-row {
-            display: grid;
-            grid-template-columns: 92px 1fr auto;
-            gap: 10px;
-            align-items: center;
-          }
-
-          .stats-period-label {
-            font-size: 11px;
-            color: var(--text-sub);
-            white-space: nowrap;
-          }
-
-          .stats-period-bar-wrap {
-            width: 100%;
-            height: 10px;
-            border-radius: 999px;
-            background: rgba(148,163,184,0.14);
-            overflow: hidden;
-          }
-
-          .stats-period-bar {
-            height: 100%;
-            border-radius: 999px;
-            background: rgba(59,130,246,0.72);
-          }
-
-          .stats-period-value {
-            font-size: 11px;
-            color: var(--text);
-            white-space: nowrap;
-            font-variant-numeric: tabular-nums;
-          }
         `}
       </style>
 
@@ -626,10 +556,7 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
               color: "var(--text-sub)",
             }}
           >
-            当前范围：
-            {selectedBookId === "all"
-              ? "全部书籍"
-              : books.find((book) => book.id === selectedBookId)?.title ?? "当前书籍"}
+          
           </div>
         </div>
       </section>
@@ -1238,60 +1165,85 @@ ${formatMinutes(item.totalDurationMs)} 分钟`}
       </section>
 
       <section className="stats-card">
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-            marginBottom: 10,
-            flexWrap: "wrap",
-          }}
-        >
-          <div className="stats-card-title" style={{ marginBottom: 0 }}>
-            周 / 月统计
-          </div>
-
-          <div className="stats-segment-switch">
-            <button
-              type="button"
-              className={`stats-segment-btn ${periodMode === "week" ? "active" : ""}`}
-              onClick={() => setPeriodMode("week")}
-            >
-              周
-            </button>
-            <button
-              type="button"
-              className={`stats-segment-btn ${periodMode === "month" ? "active" : ""}`}
-              onClick={() => setPeriodMode("month")}
-            >
-              月
-            </button>
-          </div>
+        <div className="stats-card-title" style={{ marginBottom: 10 }}>
+          近期汇总
         </div>
 
-        {recentPeriodStats.length === 0 ? (
-          <div style={{ fontSize: 11, color: "var(--text-sub)" }}>暂无数据</div>
-        ) : (
-          <div className="stats-period-list">
-            {recentPeriodStats.map((item) => {
-              const maxWords = Math.max(...recentPeriodStats.map((stat) => stat.totalWords), 1);
-              const widthPercent = Math.max(8, Math.round((item.totalWords / maxWords) * 100));
+        <div
+          style={{
+            fontSize: 10,
+            color: "var(--text-sub)",
+            marginBottom: 12,
+            lineHeight: 1.45,
+          }}
+        >
+        
+        </div>
 
-              return (
-                <div key={item.label} className="stats-period-row">
-                  <div className="stats-period-label">{item.label}</div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {(
+            [
+              { title: "近 7 天", data: recent7 },
+              { title: "近 30 天", data: recent30 },
+            ] as const
+          ).map(({ title, data }) => (
+            <div
+              key={title}
+              style={{
+                border: "1px solid var(--border)",
+                borderRadius: 12,
+                background: "var(--btn-bg)",
+                padding: 12,
+                minWidth: 0,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 12,
+                  fontWeight: 700,
+                  color: "var(--text)",
+                  marginBottom: 10,
+                }}
+              >
+                {title}
+              </div>
 
-                  <div className="stats-period-bar-wrap">
-                    <div className="stats-period-bar" style={{ width: `${widthPercent}%` }} />
-                  </div>
-
-                  <div className="stats-period-value">{item.totalWords} 字</div>
+              <div className="stats-grid">
+                <div className="stats-metric">
+                  <div className="stats-metric-label">净字数</div>
+                  <div className="stats-metric-value">{data.totalWords}</div>
+                  <div className="stats-metric-sub">字</div>
                 </div>
-              );
-            })}
-          </div>
-        )}
+
+                <div className="stats-metric">
+                  <div className="stats-metric-label">总时长</div>
+                  <div className="stats-metric-value">
+                    {formatMinutes(data.totalDurationMs)}
+                  </div>
+                  <div className="stats-metric-sub">分钟</div>
+                </div>
+
+                <div className="stats-metric">
+                  <div className="stats-metric-label">活跃天</div>
+                  <div className="stats-metric-value">{data.activeDays}</div>
+                  <div className="stats-metric-sub">天</div>
+                </div>
+
+                <div className="stats-metric">
+                  <div className="stats-metric-label">窗口日均净字</div>
+                  <div className="stats-metric-value">{data.avgWordsPerDay}</div>
+                  <div className="stats-metric-sub">字 / 天</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );

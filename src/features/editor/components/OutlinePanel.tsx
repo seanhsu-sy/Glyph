@@ -1,10 +1,36 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { readFile, saveFileContent } from "../../../shared/lib/tauri";
 import type { DocumentItem } from "../../../shared/lib/tauri";
+
+const OUTLINE_FONT_KEY = "glyph_outline_font_px";
+const OUTLINE_FONT_MIN = 9;
+const OUTLINE_FONT_MAX = 18;
+const OUTLINE_FONT_DEFAULT = 11;
+
+function readOutlineFont(): number {
+  const raw = localStorage.getItem(OUTLINE_FONT_KEY);
+  const n = raw ? Number(raw) : NaN;
+  if (!Number.isFinite(n)) return OUTLINE_FONT_DEFAULT;
+  return Math.min(
+    OUTLINE_FONT_MAX,
+    Math.max(OUTLINE_FONT_MIN, Math.round(n)),
+  );
+}
 
 type OutlinePanelProps = {
   docs: DocumentItem[];
   currentFilePath: string | null;
+};
+
+const rootShell: CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  width: "100%",
+  height: "100%",
+  background: "var(--panel-bg)",
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
 };
 
 export function OutlinePanel({ docs }: OutlinePanelProps) {
@@ -21,6 +47,19 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
 
   const [note, setNote] = useState("");
   const [editingNote, setEditingNote] = useState(false);
+
+  const [fontPx, setFontPx] = useState(() => readOutlineFont());
+
+  const bumpFont = (delta: number) => {
+    setFontPx((prev) => {
+      const next = Math.min(
+        OUTLINE_FONT_MAX,
+        Math.max(OUTLINE_FONT_MIN, prev + delta),
+      );
+      localStorage.setItem(OUTLINE_FONT_KEY, String(next));
+      return next;
+    });
+  };
 
   const selectedOutline =
     outlineDocs.find((doc) => doc.path === selectedOutlinePath) ?? null;
@@ -109,14 +148,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
 
   if (viewMode === "list") {
     return (
-      <div
-        style={{
-          minHeight: "100%",
-          background: "var(--panel-bg)",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
+      <div style={rootShell}>
         <div
           style={{
             padding: "8px 10px",
@@ -125,11 +157,12 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
             alignItems: "center",
             justifyContent: "space-between",
             gap: 8,
+            flexShrink: 0,
           }}
         >
           <div
             style={{
-              fontSize: 11,
+              fontSize: fontPx,
               fontWeight: 700,
               color: "var(--text-sub)",
               lineHeight: 1.2,
@@ -137,10 +170,53 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
           >
             大纲列表
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              type="button"
+              onClick={() => bumpFont(-1)}
+              disabled={fontPx <= OUTLINE_FONT_MIN}
+              aria-label="缩小大纲字号"
+              style={{
+                border: "1px solid var(--btn-border)",
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                borderRadius: 6,
+                padding: "2px 6px",
+                cursor: fontPx <= OUTLINE_FONT_MIN ? "not-allowed" : "pointer",
+                fontSize: 10,
+                lineHeight: 1,
+                opacity: fontPx <= OUTLINE_FONT_MIN ? 0.45 : 1,
+              }}
+            >
+              A−
+            </button>
+            <button
+              type="button"
+              onClick={() => bumpFont(1)}
+              disabled={fontPx >= OUTLINE_FONT_MAX}
+              aria-label="放大大纲字号"
+              style={{
+                border: "1px solid var(--btn-border)",
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                borderRadius: 6,
+                padding: "2px 6px",
+                cursor: fontPx >= OUTLINE_FONT_MAX ? "not-allowed" : "pointer",
+                fontSize: 10,
+                lineHeight: 1,
+                opacity: fontPx >= OUTLINE_FONT_MAX ? 0.45 : 1,
+              }}
+            >
+              A+
+            </button>
+          </div>
         </div>
 
         <div
           style={{
+            flex: 1,
+            minHeight: 0,
+            overflow: "auto",
             padding: "8px 10px",
             display: "flex",
             flexDirection: "column",
@@ -150,7 +226,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
           {outlineDocs.length === 0 ? (
             <div
               style={{
-                fontSize: 10,
+                fontSize: fontPx,
                 color: "var(--text-sub)",
               }}
             >
@@ -179,7 +255,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
                 <span
                   style={{
                     display: "block",
-                    fontSize: 11,
+                    fontSize: fontPx,
                     fontWeight: 500,
                     lineHeight: 1.2,
                     overflow: "hidden",
@@ -198,15 +274,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100%",
-        height: "100%",
-        background: "var(--panel-bg)",
-        display: "flex",
-        flexDirection: "column",
-      }}
-    >
+    <div style={rootShell}>
       <div
         style={{
           padding: "8px 10px",
@@ -215,6 +283,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
           flexDirection: "column",
           gap: 5,
           minWidth: 0,
+          flexShrink: 0,
         }}
       >
         <div
@@ -228,7 +297,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
         >
           <div
             style={{
-              fontSize: 12,
+              fontSize: fontPx,
               fontWeight: 700,
               color: "var(--text)",
               lineHeight: 1.2,
@@ -242,31 +311,71 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
             {selectedOutline?.name ?? "未选择大纲"}
           </div>
 
-          <button
-  type="button"
-  onClick={() => {
-    setViewMode("list");
-    setEditingNote(false);
-  }}
-  title="返回列表"
-  style={{
-    width: 24,
-    height: 24,
-    borderRadius: 6,
-    border: "1px solid var(--btn-border)",
-    background: "var(--btn-bg)",
-    color: "var(--text)",
-    cursor: "pointer",
-    display: "grid",
-    placeItems: "center",
-    fontSize: 11,
-    lineHeight: 1,
-    padding: 0,
-    flexShrink: 0,
-  }}
->
-  ←
-</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+            <button
+              type="button"
+              onClick={() => bumpFont(-1)}
+              disabled={fontPx <= OUTLINE_FONT_MIN}
+              aria-label="缩小大纲字号"
+              style={{
+                border: "1px solid var(--btn-border)",
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                borderRadius: 6,
+                padding: "2px 6px",
+                cursor: fontPx <= OUTLINE_FONT_MIN ? "not-allowed" : "pointer",
+                fontSize: 10,
+                lineHeight: 1,
+                opacity: fontPx <= OUTLINE_FONT_MIN ? 0.45 : 1,
+              }}
+            >
+              A−
+            </button>
+            <button
+              type="button"
+              onClick={() => bumpFont(1)}
+              disabled={fontPx >= OUTLINE_FONT_MAX}
+              aria-label="放大大纲字号"
+              style={{
+                border: "1px solid var(--btn-border)",
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                borderRadius: 6,
+                padding: "2px 6px",
+                cursor: fontPx >= OUTLINE_FONT_MAX ? "not-allowed" : "pointer",
+                fontSize: 10,
+                lineHeight: 1,
+                opacity: fontPx >= OUTLINE_FONT_MAX ? 0.45 : 1,
+              }}
+            >
+              A+
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setViewMode("list");
+                setEditingNote(false);
+              }}
+              title="返回列表"
+              style={{
+                width: 24,
+                height: 24,
+                borderRadius: 6,
+                border: "1px solid var(--btn-border)",
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                cursor: "pointer",
+                display: "grid",
+                placeItems: "center",
+                fontSize: 10,
+                lineHeight: 1,
+                padding: 0,
+                flexShrink: 0,
+              }}
+            >
+              ←
+            </button>
+          </div>
         </div>
 
         {editingNote ? (
@@ -287,7 +396,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
               outline: "none",
               background: "transparent",
               color: "var(--text-sub)",
-              fontSize: 10,
+              fontSize: fontPx,
               lineHeight: 1.3,
             }}
           />
@@ -302,7 +411,7 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
               padding: 0,
               textAlign: "left",
               cursor: "text",
-              fontSize: 10,
+              fontSize: fontPx,
               lineHeight: 1.3,
               width: "100%",
               overflow: "hidden",
@@ -320,14 +429,16 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
         style={{
           flex: 1,
           minHeight: 0,
-          padding: "8px 10px 14px",
-          overflow: "auto",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
+          padding: "8px 10px 0",
         }}
       >
         {loading ? (
           <div
             style={{
-              fontSize: 10,
+              fontSize: fontPx,
               color: "var(--text-sub)",
             }}
           >
@@ -339,23 +450,26 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
             onChange={(e) => setOutlineContent(e.currentTarget.value)}
             placeholder="写下结构、节奏、设定、备注……"
             style={{
+              flex: 1,
+              minHeight: 0,
               width: "100%",
-              minHeight: 360,
               resize: "none",
               border: "none",
               outline: "none",
               background: "transparent",
               color: "var(--text)",
-              fontSize: 11,
+              fontSize: fontPx,
               lineHeight: 1.7,
               fontFamily: "inherit",
               padding: 0,
+              overflow: "auto",
+              boxSizing: "border-box",
             }}
           />
         ) : (
           <div
             style={{
-              fontSize: 10,
+              fontSize: fontPx,
               color: "var(--text-sub)",
             }}
           >
@@ -368,8 +482,9 @@ export function OutlinePanel({ docs }: OutlinePanelProps) {
         style={{
           borderTop: "1px solid var(--border)",
           padding: "5px 10px",
-          fontSize: 10,
+          fontSize: fontPx,
           color: "var(--text-sub)",
+          flexShrink: 0,
         }}
       >
         {saveState === "saving"
