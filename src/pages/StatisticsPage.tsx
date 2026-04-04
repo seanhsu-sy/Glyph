@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+
+import { ThemeModeButton } from "../components/ThemeModeButton";
 import { StatisticsPanel } from "../features/stats/components/StatisticsPanel";
 import { listBooks } from "../shared/lib/tauri";
 import type { Book } from "../shared/lib/tauri";
@@ -171,22 +173,25 @@ export function StatisticsPage({ onBack }: Props) {
             )}
           </div>
 
-          <button
-            type="button"
-            onClick={onBack}
-            style={{
-              border: "1px solid var(--btn-border)",
-              borderRadius: 9,
-              background: "var(--btn-bg)",
-              color: "var(--text)",
-              padding: "8px 12px",
-              cursor: "pointer",
-              fontSize: 12,
-              lineHeight: 1.2,
-            }}
-          >
-            返回书籍库
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <ThemeModeButton />
+            <button
+              type="button"
+              onClick={onBack}
+              style={{
+                border: "1px solid var(--btn-border)",
+                borderRadius: 9,
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                padding: "8px 12px",
+                cursor: "pointer",
+                fontSize: 12,
+                lineHeight: 1.2,
+              }}
+            >
+              返回书籍库
+            </button>
+          </div>
         </div>
 
         {loading ? (

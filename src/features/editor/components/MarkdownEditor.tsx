@@ -8,6 +8,8 @@ import {
   EditorView,
   keymap,
   highlightActiveLine,
+  ViewPlugin,
+  type ViewUpdate,
 } from "@codemirror/view";
 import {
   defaultKeymap,
@@ -17,7 +19,10 @@ import {
   undo,
 } from "@codemirror/commands";
 
+import { useTypewriterStore } from "../../../app/store/typewriterStore";
+import { useThemeStore } from "../../../app/store/themeStore";
 import { useEditorStore } from "../../../app/store/editorStore";
+import { playTypewriterClick } from "../../typewriter/webAudio";
 import type { AssocAnchor } from "../../../shared/lib/associations";
 import { useEditorActions } from "../hooks/useEditorActions";
 
@@ -179,6 +184,77 @@ function buildAssociationDecorations(
   return Decoration.set(ranges, true);
 }
 
+const selectionCountPlugin = ViewPlugin.fromClass(
+  class {
+    dom = document.createElement("div");
+    private view!: EditorView;
+    private raf = 0;
+    private readonly onScroll = () => this.schedule();
+    private readonly onMouseUp = () => this.schedule();
+
+    constructor(view: EditorView) {
+      this.view = view;
+      this.dom.className = "cm-selection-count-tooltip";
+      this.dom.style.display = "none";
+      this.dom.style.position = "fixed";
+      this.dom.style.zIndex = "2147483647";
+      this.dom.style.pointerEvents = "none";
+      document.body.appendChild(this.dom);
+      view.scrollDOM.addEventListener("scroll", this.onScroll, { passive: true });
+      view.dom.addEventListener("mouseup", this.onMouseUp);
+      this.schedule();
+    }
+
+    schedule() {
+      cancelAnimationFrame(this.raf);
+      this.raf = requestAnimationFrame(() => {
+        this.view.requestMeasure();
+        requestAnimationFrame(() => this.updateDOM());
+      });
+    }
+
+    update(update: ViewUpdate) {
+      if (!update.selectionSet && !update.docChanged && !update.viewportChanged) {
+        return;
+      }
+      this.schedule();
+    }
+
+    updateDOM() {
+      const view = this.view;
+      const sel = view.state.selection.main;
+      if (sel.empty) {
+        this.dom.style.display = "none";
+        return;
+      }
+      const text = view.state.doc.sliceString(sel.from, sel.to);
+      const n = text.length;
+      this.dom.textContent = `${n} 字`;
+
+      const coords =
+        view.coordsAtPos(sel.to, 1) ??
+        view.coordsAtPos(sel.head, 1) ??
+        view.coordsAtPos(sel.from, -1);
+
+      if (!coords) {
+        this.dom.style.display = "none";
+        return;
+      }
+
+      this.dom.style.display = "block";
+      this.dom.style.left = `${coords.left}px`;
+      this.dom.style.top = `${coords.top - 28}px`;
+    }
+
+    destroy() {
+      cancelAnimationFrame(this.raf);
+      this.view.scrollDOM.removeEventListener("scroll", this.onScroll);
+      this.view.dom.removeEventListener("mouseup", this.onMouseUp);
+      this.dom.remove();
+    }
+  },
+);
+
 const associationField = StateField.define<DecorationSet>({
   create(state) {
     return buildAssociationDecorations(state, state.facet(associationFacet));
@@ -202,8 +278,12 @@ export function MarkdownEditor({
   const content = useEditorStore((s) => s.content);
   const fontFamily = useEditorStore((s) => s.fontFamily);
   const fontSize = useEditorStore((s) => s.fontSize);
+  const themeId = useThemeStore((s) => s.theme);
+  const typewriterEnabled = useTypewriterStore((s) => s.enabled);
 
   const { updateContent } = useEditorActions();
+
+  const cmTheme = themeId === "dark" ? "dark" : "light";
 
   const viewRef = useRef<EditorView | null>(null);
 
@@ -432,8 +512,18 @@ export function MarkdownEditor({
         ...defaultKeymap,
       ]),
       tagField,
+      selectionCountPlugin,
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged) return;
+        const userType = update.transactions.some((tr) =>
+          tr.isUserEvent("input.type"),
+        );
+        if (!userType) return;
+        if (!useTypewriterStore.getState().enabled) return;
+        playTypewriterClick(0.22);
+      }),
     ],
-    [associationAnchors],
+    [associationAnchors, typewriterEnabled],
   );
 
   return (
@@ -463,7 +553,7 @@ export function MarkdownEditor({
           highlightActiveLineGutter: false,
           searchKeymap: true,
         }}
-        theme="light"
+        theme={cmTheme}
         style={{
           height: "100%",
           width: "100%",

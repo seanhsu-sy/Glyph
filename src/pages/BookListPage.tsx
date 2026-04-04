@@ -8,7 +8,8 @@ import {
 import type { Book } from "../shared/lib/tauri";
 import { getStatsOverview } from "../shared/lib/stats";
 import type { StatsOverview } from "../shared/lib/stats";
-import { useThemeStore } from "../app/store/themeStore";
+import { ThemeModeButton } from "../components/ThemeModeButton";
+import { TypewriterSoundButton } from "../components/TypewriterSoundButton";
 
 type Props = {
   onOpenBook: (book: Book) => void;
@@ -28,9 +29,6 @@ function formatMinutes(ms: number) {
 }
 
 export function BookListPage({ onOpenBook, onOpenStats }: Props) {
-  const theme = useThemeStore((s) => s.theme);
-  const toggleTheme = useThemeStore((s) => s.toggleTheme);
-
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<StatsOverview | null>(null);
@@ -299,23 +297,9 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
             )}
           </div>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              type="button"
-              onClick={toggleTheme}
-              style={{
-                border: "1px solid var(--btn-border)",
-                borderRadius: 9,
-                background: "var(--btn-bg)",
-                color: "var(--text)",
-                padding: "8px 12px",
-                cursor: "pointer",
-                fontSize: 12,
-                lineHeight: 1.2,
-              }}
-            >
-              {theme === "light" ? "深色" : "浅色"}
-            </button>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <ThemeModeButton />
+            <TypewriterSoundButton />
 
             <button
               type="button"
