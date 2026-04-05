@@ -871,73 +871,113 @@ export function BookListPage({
               style={{
                 marginBottom: 12,
                 display: "flex",
-                gap: 8,
                 flexWrap: "wrap",
                 alignItems: "center",
+                gap: 8,
+                justifyContent: "space-between",
+                rowGap: 8,
               }}
             >
-              <span style={{ fontSize: 11, color: "var(--text-sub)" }}>筛选</span>
-              <button
-                type="button"
-                onClick={() => setGroupFilter("all")}
+              <div
                 style={{
-                  border: `1px solid ${groupFilter === "all" ? "var(--accent)" : "var(--btn-border)"}`,
-                  borderRadius: 8,
-                  background: groupFilter === "all" ? "var(--accent-soft)" : "var(--btn-bg)",
-                  color: "var(--text)",
-                  padding: "4px 10px",
-                  cursor: "pointer",
-                  fontSize: 11,
+                  display: "flex",
+                  flexWrap: "wrap",
+                  alignItems: "center",
+                  gap: 8,
+                  flex: "1 1 auto",
+                  minWidth: 0,
                 }}
               >
-                全部
-              </button>
-              {uniqueGroupKeys.map((g) => (
+                <span style={{ fontSize: 11, color: "var(--text-sub)" }}>筛选</span>
                 <button
-                  key={g}
                   type="button"
-                  onClick={() => setGroupFilter(g)}
+                  onClick={() => setGroupFilter("all")}
                   style={{
-                    border: `1px solid ${groupFilter === g ? "var(--accent)" : "var(--btn-border)"}`,
+                    border: `1px solid ${groupFilter === "all" ? "var(--accent)" : "var(--btn-border)"}`,
                     borderRadius: 8,
-                    background: groupFilter === g ? "var(--accent-soft)" : "var(--btn-bg)",
+                    background: groupFilter === "all" ? "var(--accent-soft)" : "var(--btn-bg)",
                     color: "var(--text)",
                     padding: "4px 10px",
                     cursor: "pointer",
                     fontSize: 11,
                   }}
                 >
-                  {g}
+                  全部
                 </button>
-              ))}
-              <span
-                style={{
-                  marginLeft: 4,
-                  fontSize: 11,
-                  color: "var(--text-sub)",
-                  alignSelf: "center",
+                {uniqueGroupKeys.map((g) => (
+                  <button
+                    key={g}
+                    type="button"
+                    onClick={() => setGroupFilter(g)}
+                    style={{
+                      border: `1px solid ${groupFilter === g ? "var(--accent)" : "var(--btn-border)"}`,
+                      borderRadius: 8,
+                      background: groupFilter === g ? "var(--accent-soft)" : "var(--btn-bg)",
+                      color: "var(--text)",
+                      padding: "4px 10px",
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                  >
+                    {g}
+                  </button>
+                ))}
+                <span
+                  style={{
+                    marginLeft: 4,
+                    fontSize: 11,
+                    color: "var(--text-sub)",
+                    alignSelf: "center",
+                  }}
+                >
+                  搜索
+                </span>
+                <input
+                  type="search"
+                  value={bookSearchQuery}
+                  onChange={(e) => setBookSearchQuery(e.target.value)}
+                  placeholder="书名 / 文件夹 / 分组"
+                  style={{
+                    minWidth: 160,
+                    flex: "1 1 160px",
+                    maxWidth: 320,
+                    boxSizing: "border-box",
+                    padding: "5px 9px",
+                    border: "1px solid var(--btn-border)",
+                    borderRadius: 8,
+                    fontSize: 12,
+                    background: "var(--btn-bg)",
+                    color: "var(--text)",
+                  }}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCreating(true);
                 }}
-              >
-                搜索
-              </span>
-              <input
-                type="search"
-                value={bookSearchQuery}
-                onChange={(e) => setBookSearchQuery(e.target.value)}
-                placeholder="书名 / 文件夹 / 分组"
+                title="新建书籍"
+                aria-label="新建书籍"
                 style={{
-                  minWidth: 160,
-                  flex: "1 1 160px",
-                  maxWidth: 320,
-                  boxSizing: "border-box",
-                  padding: "5px 9px",
+                  flexShrink: 0,
+                  width: 32,
+                  height: 32,
                   border: "1px solid var(--btn-border)",
-                  borderRadius: 8,
-                  fontSize: 12,
+                  borderRadius: 9,
                   background: "var(--btn-bg)",
                   color: "var(--text)",
+                  cursor: "pointer",
+                  fontSize: 18,
+                  lineHeight: 1,
+                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
                 }}
-              />
+              >
+                +
+              </button>
             </div>
 
             {filteredBooks.length > 0 && searchedBooks.length === 0 ? (
