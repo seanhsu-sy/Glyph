@@ -46,6 +46,8 @@ const rootShell: CSSProperties = {
   overflow: "hidden",
 };
 
+const KIND_LABEL = "大纲";
+
 export function OutlinePanel({
   docs,
   currentFilePath,
@@ -54,10 +56,12 @@ export function OutlinePanel({
   editorDirty,
   onOpenOutlineInEditor,
 }: OutlinePanelProps) {
-  const outlineDocs = useMemo(
+  const panelDocs = useMemo(
     () => docs.filter((doc) => doc.kind === "outline"),
     [docs],
   );
+
+  const noteKey = (path: string) => `outline_note_${path}`;
 
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
   const [selectedOutlinePath, setSelectedOutlinePath] = useState<string | null>(null);
@@ -73,8 +77,8 @@ export function OutlinePanel({
   const isLinked = useMemo(() => {
     if (!currentFilePath || !selectedOutlinePath) return false;
     if (selectedOutlinePath !== currentFilePath) return false;
-    return outlineDocs.some((d) => d.path === currentFilePath);
-  }, [currentFilePath, selectedOutlinePath, outlineDocs]);
+    return panelDocs.some((d) => d.path === currentFilePath);
+  }, [currentFilePath, selectedOutlinePath, panelDocs]);
 
   /** 仅当主编辑区「换到」某大纲路径时对齐侧栏，避免 loadDocs 刷新列表时把用户从列表视图拽回详情 */
   const lastSyncedCenterOutlineRef = useRef<string | null>(null);
@@ -91,15 +95,15 @@ export function OutlinePanel({
   };
 
   const selectedOutline =
-    outlineDocs.find((doc) => doc.path === selectedOutlinePath) ?? null;
+    panelDocs.find((doc) => doc.path === selectedOutlinePath) ?? null;
 
   useEffect(() => {
     if (!currentFilePath) {
       lastSyncedCenterOutlineRef.current = null;
       return;
     }
-    const outlineDoc = outlineDocs.find((d) => d.path === currentFilePath);
-    if (!outlineDoc) {
+    const panelDoc = panelDocs.find((d) => d.path === currentFilePath);
+    if (!panelDoc) {
       lastSyncedCenterOutlineRef.current = null;
       return;
     }
@@ -109,10 +113,10 @@ export function OutlinePanel({
     lastSyncedCenterOutlineRef.current = currentFilePath;
     setSelectedOutlinePath(currentFilePath);
     setViewMode("detail");
-  }, [currentFilePath, outlineDocs]);
+  }, [currentFilePath, panelDocs]);
 
   useEffect(() => {
-    if (outlineDocs.length === 0) {
+    if (panelDocs.length === 0) {
       setSelectedOutlinePath(null);
       setOutlineContent("");
       setNote("");
@@ -122,14 +126,14 @@ export function OutlinePanel({
 
     if (
       selectedOutlinePath &&
-      !outlineDocs.some((doc) => doc.path === selectedOutlinePath)
+      !panelDocs.some((doc) => doc.path === selectedOutlinePath)
     ) {
       setSelectedOutlinePath(null);
       setOutlineContent("");
       setNote("");
       setViewMode("list");
     }
-  }, [outlineDocs, selectedOutlinePath]);
+  }, [panelDocs, selectedOutlinePath]);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,7 +143,7 @@ export function OutlinePanel({
 
       if (isLinked) {
         setLoading(false);
-        const saved = localStorage.getItem(`outline_note_${selectedOutlinePath}`);
+        const saved = localStorage.getItem(noteKey(selectedOutlinePath));
         setNote(saved || "可在右侧直接修改");
         setEditingNote(false);
         return;
@@ -154,11 +158,11 @@ export function OutlinePanel({
         setOutlineContent(text);
         setSaveState("idle");
 
-        const saved = localStorage.getItem(`outline_note_${selectedOutlinePath}`);
+        const saved = localStorage.getItem(noteKey(selectedOutlinePath));
         setNote(saved || "可在右侧直接修改");
         setEditingNote(false);
       } catch (err) {
-        console.error("读取大纲失败", err);
+        console.error(`读取${KIND_LABEL}失败`, err);
         if (!cancelled) {
           setOutlineContent("");
           setSaveState("error");
@@ -187,7 +191,7 @@ export function OutlinePanel({
         await saveFileContent(selectedOutlinePath, outlineContent);
         setSaveState("saved");
       } catch (err) {
-        console.error("保存大纲失败", err);
+        console.error(`保存${KIND_LABEL}失败`, err);
         setSaveState("error");
       }
     }, 500);
@@ -199,7 +203,7 @@ export function OutlinePanel({
 
   useEffect(() => {
     if (!selectedOutlinePath || viewMode !== "detail") return;
-    localStorage.setItem(`outline_note_${selectedOutlinePath}`, note);
+    localStorage.setItem(noteKey(selectedOutlinePath), note);
   }, [note, selectedOutlinePath, viewMode]);
 
   if (viewMode === "list") {
@@ -224,14 +228,14 @@ export function OutlinePanel({
               lineHeight: 1.2,
             }}
           >
-            大纲列表
+            {KIND_LABEL}列表
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <button
               type="button"
               onClick={() => bumpFont(-1)}
               disabled={fontPx <= OUTLINE_FONT_MIN}
-              aria-label="缩小大纲字号"
+              aria-label={`缩小${KIND_LABEL}字号`}
               style={{
                 border: "1px solid var(--btn-border)",
                 background: "var(--btn-bg)",
@@ -250,7 +254,7 @@ export function OutlinePanel({
               type="button"
               onClick={() => bumpFont(1)}
               disabled={fontPx >= OUTLINE_FONT_MAX}
-              aria-label="放大大纲字号"
+              aria-label={`放大${KIND_LABEL}字号`}
               style={{
                 border: "1px solid var(--btn-border)",
                 background: "var(--btn-bg)",
@@ -279,17 +283,17 @@ export function OutlinePanel({
             gap: 5,
           }}
         >
-          {outlineDocs.length === 0 ? (
+          {panelDocs.length === 0 ? (
             <div
               style={{
                 fontSize: fontPx,
                 color: "var(--text-sub)",
               }}
             >
-              还没有大纲
+              还没有{KIND_LABEL}
             </div>
           ) : (
-            outlineDocs.map((doc) => (
+            panelDocs.map((doc) => (
               <button
                 key={doc.path}
                 type="button"
@@ -374,9 +378,9 @@ export function OutlinePanel({
               whiteSpace: "nowrap",
               minWidth: 0,
             }}
-            title={selectedOutline?.name ?? "未选择大纲"}
+            title={selectedOutline?.name ?? `未选择${KIND_LABEL}`}
           >
-            {selectedOutline?.name ?? "未选择大纲"}
+            {selectedOutline?.name ?? `未选择${KIND_LABEL}`}
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
@@ -384,7 +388,7 @@ export function OutlinePanel({
               type="button"
               onClick={() => bumpFont(-1)}
               disabled={fontPx <= OUTLINE_FONT_MIN}
-              aria-label="缩小大纲字号"
+              aria-label={`缩小${KIND_LABEL}字号`}
               style={{
                 border: "1px solid var(--btn-border)",
                 background: "var(--btn-bg)",
@@ -403,7 +407,7 @@ export function OutlinePanel({
               type="button"
               onClick={() => bumpFont(1)}
               disabled={fontPx >= OUTLINE_FONT_MAX}
-              aria-label="放大大纲字号"
+              aria-label={`放大${KIND_LABEL}字号`}
               style={{
                 border: "1px solid var(--btn-border)",
                 background: "var(--btn-bg)",
@@ -548,7 +552,7 @@ export function OutlinePanel({
               color: "var(--text-sub)",
             }}
           >
-            当前没有可用大纲。
+            当前没有可用{KIND_LABEL}。
           </div>
         )}
       </div>

@@ -1,4 +1,4 @@
-import { create } from "zustand";
+import { create, type StateCreator } from "zustand";
 
 export type SaveStatus = "idle" | "saving" | "saved" | "unsaved";
 export type SidePanelMode =
@@ -74,7 +74,8 @@ type EditorStore = {
   toggleSidePanel: (mode: Exclude<SidePanelMode, null>) => void;
 };
 
-export const useEditorStore = create<EditorStore>((set, get) => ({
+/** 当前文档编辑区状态 */
+const createEditorStoreSlice: StateCreator<EditorStore> = (set, get) => ({
   filePath: null,
   fileName: "Untitled.md",
   content: "",
@@ -233,4 +234,6 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         sidePanelMode: mode,
       };
     }),
-}));
+});
+
+export const useEditorStore = create<EditorStore>(createEditorStoreSlice);

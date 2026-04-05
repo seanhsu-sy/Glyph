@@ -24,24 +24,14 @@ import { useThemeStore } from "../../../app/store/themeStore";
 import { useEditorStore } from "../../../app/store/editorStore";
 import { playTypewriterClick } from "../../typewriter/webAudio";
 import type { AssocAnchor } from "../../../shared/lib/associations";
+import { setMarkdownPaneHandle } from "../editorPaneRegistry";
 import { useEditorActions } from "../hooks/useEditorActions";
+import type { MarkdownEditorHandle } from "../markdownEditorHandleTypes";
+
+export type { MarkdownEditorHandle } from "../markdownEditorHandleTypes";
+export { getMarkdownEditorHandle } from "../editorPaneRegistry";
 
 type MarkdownCommand = "h1" | "bold" | "italic";
-
-export type MarkdownEditorHandle = {
-  applyCommand: (type: MarkdownCommand) => void;
-  scrollToIndex: (index: number) => void;
-  highlightBlockAtIndex: (index: number) => void;
-  getSelection: () => { from: number; to: number; text: string } | null;
-  undo: () => void;
-  redo: () => void;
-};
-
-let editorHandle: MarkdownEditorHandle | null = null;
-
-export function getMarkdownEditorHandle() {
-  return editorHandle;
-}
 
 function handleSmartEnter(view: EditorView) {
   const { state } = view;
@@ -372,7 +362,7 @@ export function MarkdownEditor({
   );
 
   useEffect(() => {
-    editorHandle = {
+    const handle: MarkdownEditorHandle = {
       applyCommand: (type: MarkdownCommand) => {
         const view = viewRef.current;
         if (!view) return;
@@ -490,8 +480,9 @@ export function MarkdownEditor({
       },
     };
 
+    setMarkdownPaneHandle(handle);
     return () => {
-      editorHandle = null;
+      setMarkdownPaneHandle(null);
     };
   }, []);
 

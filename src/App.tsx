@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { useThemeStore } from "./app/store/themeStore";
 import { BookListPage } from "./pages/BookListPage";
@@ -30,24 +30,70 @@ function AppShell({ children }: { children: React.ReactNode }) {
 
 function App() {
   const [page, setPage] = useState<AppPage>("library");
-  const [selectedBook, setSelectedBook] = useState<Book | null>(null);
+  const [currentBook, setCurrentBook] = useState<Book | null>(null);
+  const [libraryOverlayOpen, setLibraryOverlayOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
+  useEffect(() => {
+    if (!libraryOverlayOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setLibraryOverlayOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [libraryOverlayOpen]);
+
+  const openBook = useCallback((book: Book) => {
+    setCurrentBook(book);
+    setPage("editor");
+    setLibraryOverlayOpen(false);
+  }, []);
+
+  const exitToLibrary = useCallback(() => {
+    setCurrentBook(null);
+    setPage("library");
+    setLibraryOverlayOpen(false);
+  }, []);
+
   return (
     <>
-      {page === "editor" && selectedBook ? (
+      {page === "editor" && currentBook ? (
         <AppShell>
           <EditorPage
-            book={selectedBook}
-            onBack={() => {
-              setSelectedBook(null);
-              setPage("library");
-            }}
+            book={currentBook}
+            onBack={() => setLibraryOverlayOpen(true)}
+            onExitToLibrary={exitToLibrary}
           />
+          {libraryOverlayOpen ? (
+            <div
+              role="dialog"
+              aria-modal="true"
+              style={{
+                position: "fixed",
+                inset: 0,
+                zIndex: 1000,
+                background: "var(--bg)",
+                display: "flex",
+                flexDirection: "column",
+                minHeight: 0,
+              }}
+            >
+              <BookListPage
+                onOpenBook={openBook}
+                onOpenStats={() => {
+                  setLibraryOverlayOpen(false);
+                  setPage("stats");
+                }}
+              />
+            </div>
+          ) : null}
         </AppShell>
       ) : page === "stats" ? (
         <AppShell>
@@ -60,10 +106,7 @@ function App() {
       ) : (
         <AppShell>
           <BookListPage
-            onOpenBook={(book) => {
-              setSelectedBook(book);
-              setPage("editor");
-            }}
+            onOpenBook={openBook}
             onOpenStats={() => {
               setPage("stats");
             }}

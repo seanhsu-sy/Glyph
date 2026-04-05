@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   getDailyStats,
   getStatsOverview,
@@ -268,42 +268,38 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
     setTargetInput(String(nextTarget));
   }, [scopeKey]);
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadAll = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
 
-    const loadAll = async () => {
-      try {
-        setLoading(true);
-        setError(null);
+      const bookId = selectedBookId === "all" ? undefined : selectedBookId;
 
-        const bookId = selectedBookId === "all" ? undefined : selectedBookId;
+      const [overviewData, dailyData] = await Promise.all([
+        getStatsOverview(bookId),
+        getDailyStats(bookId),
+      ]);
 
-        const [overviewData, dailyData] = await Promise.all([
-          getStatsOverview(bookId),
-          getDailyStats(bookId),
-        ]);
-
-        if (cancelled) return;
-
-        setOverview(overviewData);
-        setDailyStats(dailyData);
-      } catch (err) {
-        if (!cancelled) {
-          setError(String(err));
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void loadAll();
-
-    return () => {
-      cancelled = true;
-    };
+      setOverview(overviewData);
+      setDailyStats(dailyData);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
   }, [selectedBookId]);
+
+  useEffect(() => {
+    void loadAll();
+  }, [loadAll]);
+
+  useEffect(() => {
+    const handler = () => {
+      void loadAll();
+    };
+    window.addEventListener("writing-stats-invalidate", handler);
+    return () => window.removeEventListener("writing-stats-invalidate", handler);
+  }, [loadAll]);
 
   const trendStats = useMemo(() => buildLastNDays(dailyStats, 14), [dailyStats]);
   const rolling7 = useMemo(() => buildLastNDays(dailyStats, 7), [dailyStats]);
@@ -338,6 +334,9 @@ export function StatisticsPanel({ books }: StatisticsPanelProps) {
     setDailyTarget(nextTarget);
     setTargetInput(String(nextTarget));
     localStorage.setItem(getTargetStorageKey(scopeKey), String(nextTarget));
+    window.dispatchEvent(
+      new CustomEvent("writing-target-changed", { detail: { scopeKey } }),
+    );
   };
 
   const maxTrendWords = Math.max(...trendStats.map((item) => item.totalWords), 1);

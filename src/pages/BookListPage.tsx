@@ -51,15 +51,98 @@ function sortGroupKeys(groups: Set<string>): string[] {
 type BookCoverSlotProps = {
   coverPath: string | null;
   bookFolderPath: string;
+  bookTitle: string;
   coverDataBust: number;
   canInteract: boolean;
   onPick: () => void;
   onClear: () => void;
 };
 
+/** 无上传封面：纯抽象色块 + 书脊，无文字（随主题色变化） */
+function BookCoverPlaceholder({ seed }: { seed: string }) {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const glowX = 68 + (Math.abs(h) % 32);
+  const glowY = 6 + (Math.abs(h >> 8) % 22);
+  const orb = 38 + (Math.abs(h >> 16) % 18);
+
+  return (
+    <div
+      style={{
+        position: "relative",
+        width: "100%",
+        height: "100%",
+        overflow: "hidden",
+        borderRadius: 9,
+      }}
+    >
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          bottom: 0,
+          width: 5,
+          background:
+            "linear-gradient(180deg, color-mix(in srgb, var(--accent) 55%, var(--card)) 0%, color-mix(in srgb, var(--accent-soft) 100%, var(--card)) 100%)",
+          boxShadow: "inset -1px 0 0 color-mix(in srgb, var(--text) 8%, transparent)",
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: 5,
+          top: 0,
+          right: 0,
+          bottom: 0,
+          background: `
+            radial-gradient(ellipse ${glowX}% ${46 + (Math.abs(h) % 14)}% at ${glowY}% 0%, color-mix(in srgb, var(--accent) 26%, transparent), transparent 56%),
+            radial-gradient(ellipse 88% 62% at 0% 100%, color-mix(in srgb, var(--accent-soft) 42%, transparent), transparent 50%),
+            linear-gradient(168deg, color-mix(in srgb, var(--card) 96%, var(--accent-soft)) 0%, color-mix(in srgb, var(--bg) 52%, var(--card)) 100%)`,
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: 5,
+          top: "18%",
+          right: "12%",
+          width: `${orb}%`,
+          paddingBottom: `${orb}%`,
+          borderRadius: "50%",
+          background:
+            "radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--accent-soft) 55%, transparent), transparent 62%)",
+          opacity: 0.45,
+          filter: "blur(0.5px)",
+        }}
+      />
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          left: 5,
+          top: 0,
+          right: 0,
+          bottom: 0,
+          opacity: 0.05,
+          backgroundImage:
+            "repeating-linear-gradient(-18deg, transparent, transparent 7px, var(--text) 7px, var(--text) 7.4px)",
+        }}
+      />
+    </div>
+  );
+}
+
 function BookCoverSlot({
   coverPath,
   bookFolderPath,
+  bookTitle,
   coverDataBust,
   canInteract,
   onPick,
@@ -114,7 +197,7 @@ function BookCoverSlot({
         flexShrink: 0,
         borderRadius: 10,
         overflow: "hidden",
-        border: "1px solid var(--border)",
+        border: "1px solid color-mix(in srgb, var(--border) 85%, var(--accent-soft))",
         background: "var(--btn-bg)",
         display: "flex",
         alignItems: "center",
@@ -136,13 +219,16 @@ function BookCoverSlot({
           }}
         />
       ) : (
-        <span style={{ fontSize: 10, color: "var(--text-sub)", pointerEvents: "none" }}>封面</span>
+        <BookCoverPlaceholder seed={`${bookFolderPath}\0${bookTitle}`} />
       )}
     </div>
   );
 }
 
-export function BookListPage({ onOpenBook, onOpenStats }: Props) {
+export function BookListPage({
+  onOpenBook,
+  onOpenStats,
+}: Props) {
   const [books, setBooks] = useState<Book[]>([]);
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState<StatsOverview | null>(null);
@@ -164,18 +250,13 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
   const [descriptionDraft, setDescriptionDraft] = useState("");
 
   const [groupFilter, setGroupFilter] = useState<"all" | string>("all");
+  const [bookSearchQuery, setBookSearchQuery] = useState("");
+  const [libraryNarrow, setLibraryNarrow] = useState(false);
   const [editingGroupBookId, setEditingGroupBookId] = useState<string | null>(null);
   const [groupDraft, setGroupDraft] = useState("");
   const groupEditCancelledRef = useRef(false);
-  const titleClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 同一 coverPath 下替换图片后强制重新拉取 data URL */
   const [coverDataBust, setCoverDataBust] = useState<Record<string, number>>({});
-
-  useEffect(() => {
-    return () => {
-      if (titleClickTimerRef.current) clearTimeout(titleClickTimerRef.current);
-    };
-  }, []);
 
   const loadBooks = async () => {
     setLoading(true);
@@ -213,6 +294,14 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
 
     void loadBooks();
     void loadOverview();
+  }, []);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 640px)");
+    const update = () => setLibraryNarrow(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
   }, []);
 
   const handleCreateBook = async () => {
@@ -388,18 +477,46 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
     return books.filter((b) => displayGroupName(b.group) === groupFilter);
   }, [books, groupFilter]);
 
+  const searchedBooks = useMemo(() => {
+    const q = bookSearchQuery.trim().toLowerCase();
+    if (!q) return filteredBooks;
+    return filteredBooks.filter((b) => {
+      const g = displayGroupName(b.group).toLowerCase();
+      return (
+        b.title.toLowerCase().includes(q) ||
+        (b.folderName ?? "").toLowerCase().includes(q) ||
+        g.includes(q)
+      );
+    });
+  }, [filteredBooks, bookSearchQuery]);
+
   const bookSections = useMemo(() => {
     const m = new Map<string, Book[]>();
-    for (const b of filteredBooks) {
+    for (const b of searchedBooks) {
       const g = displayGroupName(b.group);
       if (!m.has(g)) m.set(g, []);
       m.get(g)!.push(b);
     }
     const keys = sortGroupKeys(new Set(m.keys()));
     return keys.map((k) => ({ group: k, books: m.get(k)! }));
-  }, [filteredBooks]);
+  }, [searchedBooks]);
 
-  const showSectionHeader = groupFilter === "all" && uniqueGroupKeys.length > 1;
+  const uniqueGroupKeysInView = useMemo(() => {
+    const s = new Set<string>();
+    for (const b of searchedBooks) {
+      s.add(displayGroupName(b.group));
+    }
+    return sortGroupKeys(s);
+  }, [searchedBooks]);
+
+  const showSectionHeader =
+    groupFilter === "all" && uniqueGroupKeysInView.length > 1;
+
+  const bookGridStyle = {
+    display: "grid",
+    gridTemplateColumns: libraryNarrow ? "1fr" : "repeat(2, minmax(0, 1fr))",
+    gap: 14,
+  } as const;
 
   return (
     <div
@@ -423,102 +540,98 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
     >
       <div
         style={{
-          maxWidth: 960,
-          margin: "0 auto",
-          padding: "32px 24px 48px",
+          position: "sticky",
+          top: 0,
+          zIndex: 10,
+          display: "flex",
+          justifyContent: "flex-end",
+          background: "var(--bg)",
+          padding: "10px 24px",
         }}
       >
         <div
           style={{
-            marginBottom: 22,
+            width: "100%",
+            maxWidth: 1200,
+            margin: "0 auto",
             display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-start",
-            gap: 16,
-            flexWrap: "wrap",
+            justifyContent: "flex-end",
+            alignItems: "center",
+            gap: 8,
+            flexShrink: 0,
           }}
         >
-          <div>
-            <div
-              style={{
-                fontSize: 24,
-                fontWeight: 700,
-                letterSpacing: "-0.02em",
-                marginBottom: 6,
-              }}
-            >
-              Glyph
-            </div>
+          <ThemeModeButton />
+          <TypewriterSoundButton />
+        </div>
+      </div>
 
-            {editingLibrarySubtitle ? (
-              <input
-                autoFocus
-                value={librarySubtitle}
-                onClick={(e) => e.stopPropagation()}
-                onChange={(e) => setLibrarySubtitle(e.currentTarget.value)}
-                onBlur={submitLibrarySubtitle}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    submitLibrarySubtitle();
-                  }
-                  if (e.key === "Escape") {
-                    const saved = localStorage.getItem(getLibrarySubtitleKey());
-                    setLibrarySubtitle(saved || "本地书籍库");
-                    setEditingLibrarySubtitle(false);
-                  }
-                }}
-                style={{
-                  width: 220,
-                  boxSizing: "border-box",
-                  padding: "6px 8px",
-                  border: "1px solid var(--btn-border)",
-                  borderRadius: 8,
-                  fontSize: 13,
-                  outline: "none",
-                  background: "var(--btn-bg)",
-                  color: "var(--text-sub)",
-                }}
-              />
-            ) : (
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setEditingLibrarySubtitle(true);
-                }}
-                style={{
-                  fontSize: 13,
-                  color: "var(--text-sub)",
-                  lineHeight: 1.6,
-                  cursor: "text",
-                  display: "inline-block",
-                  padding: "2px 0",
-                }}
-              >
-                {librarySubtitle}
-              </div>
-            )}
+      <div
+        style={{
+          maxWidth: 1200,
+          margin: "0 auto",
+          padding: "24px 24px 48px",
+        }}
+      >
+        <div style={{ marginBottom: 22 }}>
+          <div
+            style={{
+              fontSize: 24,
+              fontWeight: 700,
+              letterSpacing: "-0.02em",
+              marginBottom: 6,
+            }}
+          >
+            Glyph
           </div>
 
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-            <ThemeModeButton />
-            <TypewriterSoundButton />
-            <button
-              type="button"
-              onClick={() => setCreating(true)}
+          {editingLibrarySubtitle ? (
+            <input
+              autoFocus
+              value={librarySubtitle}
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => setLibrarySubtitle(e.currentTarget.value)}
+              onBlur={submitLibrarySubtitle}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  submitLibrarySubtitle();
+                }
+                if (e.key === "Escape") {
+                  const saved = localStorage.getItem(getLibrarySubtitleKey());
+                  setLibrarySubtitle(saved || "本地书籍库");
+                  setEditingLibrarySubtitle(false);
+                }
+              }}
               style={{
+                width: 220,
+                boxSizing: "border-box",
+                padding: "6px 8px",
                 border: "1px solid var(--btn-border)",
-                borderRadius: 9,
+                borderRadius: 8,
+                fontSize: 13,
+                outline: "none",
                 background: "var(--btn-bg)",
-                color: "var(--text)",
-                padding: "8px 12px",
-                cursor: "pointer",
-                fontSize: 12,
-                lineHeight: 1.2,
+                color: "var(--text-sub)",
+              }}
+            />
+          ) : (
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditingLibrarySubtitle(true);
+              }}
+              style={{
+                fontSize: 13,
+                color: "var(--text-sub)",
+                lineHeight: 1.6,
+                cursor: "text",
+                display: "inline-block",
+                padding: "2px 0",
               }}
             >
-              新建书籍
-            </button>
-          </div>
+              {librarySubtitle}
+            </div>
+          )}
         </div>
 
         <div
@@ -723,9 +836,34 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
               color: "var(--text-sub)",
               fontSize: 12,
               background: "var(--card)",
+              display: "flex",
+              flexWrap: "wrap",
+              alignItems: "center",
+              gap: 6,
+              lineHeight: 1.6,
             }}
           >
-            还没有书籍。点击右上角「新建书籍」开始。
+            <span>还没有书籍。点击</span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setCreating(true);
+              }}
+              style={{
+                border: "1px solid var(--btn-border)",
+                borderRadius: 9,
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                padding: "6px 12px",
+                cursor: "pointer",
+                fontSize: 12,
+                lineHeight: 1.2,
+              }}
+            >
+              新建书籍
+            </button>
+            <span>开始。</span>
           </div>
         ) : (
           <>
@@ -772,7 +910,51 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                   {g}
                 </button>
               ))}
+              <span
+                style={{
+                  marginLeft: 4,
+                  fontSize: 11,
+                  color: "var(--text-sub)",
+                  alignSelf: "center",
+                }}
+              >
+                搜索
+              </span>
+              <input
+                type="search"
+                value={bookSearchQuery}
+                onChange={(e) => setBookSearchQuery(e.target.value)}
+                placeholder="书名 / 文件夹 / 分组"
+                style={{
+                  minWidth: 160,
+                  flex: "1 1 160px",
+                  maxWidth: 320,
+                  boxSizing: "border-box",
+                  padding: "5px 9px",
+                  border: "1px solid var(--btn-border)",
+                  borderRadius: 8,
+                  fontSize: 12,
+                  background: "var(--btn-bg)",
+                  color: "var(--text)",
+                }}
+              />
             </div>
+
+            {filteredBooks.length > 0 && searchedBooks.length === 0 ? (
+              <div
+                style={{
+                  marginBottom: 14,
+                  padding: 14,
+                  border: "1px dashed var(--border)",
+                  borderRadius: 12,
+                  color: "var(--text-sub)",
+                  fontSize: 12,
+                  background: "var(--card)",
+                }}
+              >
+                没有与当前搜索匹配的书籍。
+              </div>
+            ) : null}
 
             {bookSections.map(({ group: sectionGroup, books: sectionBooks }) => (
               <div key={sectionGroup} style={{ marginBottom: 18 }}>
@@ -788,13 +970,7 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                     {sectionGroup}
                   </div>
                 ) : null}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr",
-                    gap: 14,
-                  }}
-                >
+                <div style={bookGridStyle}>
                   {sectionBooks.map((book) => {
                     const deleting = deletingBookId === book.id;
                     const confirming = confirmingBookId === book.id;
@@ -806,9 +982,11 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                         key={book.id}
                         onClick={(e) => e.stopPropagation()}
                         style={{
+                          position: "relative",
                           border: "1px solid var(--border)",
                           borderRadius: 14,
                           padding: 14,
+                          paddingBottom: 50,
                           background: "var(--card)",
                           boxShadow: "0 1px 2px rgba(0, 0, 0, 0.04)",
                           display: "flex",
@@ -826,6 +1004,7 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                           <BookCoverSlot
                             coverPath={book.coverPath}
                             bookFolderPath={book.folderPath}
+                            bookTitle={book.title}
                             coverDataBust={coverDataBust[book.id] ?? 0}
                             canInteract={isTauri()}
                             onPick={() => {
@@ -888,36 +1067,22 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                                   />
                                 ) : (
                                   <div
-                                    onClick={(e) => {
+                                    onDoubleClick={(e) => {
                                       e.stopPropagation();
-                                      if (e.detail === 2) {
-                                        if (titleClickTimerRef.current) {
-                                          clearTimeout(titleClickTimerRef.current);
-                                          titleClickTimerRef.current = null;
-                                        }
-                                        onOpenBook(book);
-                                        return;
-                                      }
-                                      if (e.detail === 1) {
-                                        titleClickTimerRef.current = setTimeout(() => {
-                                          titleClickTimerRef.current = null;
-                                          setRenamingBookId(book.id);
-                                          setRenameTitle(book.title);
-                                        }, 220);
-                                      }
+                                      setRenamingBookId(book.id);
+                                      setRenameTitle(book.title);
                                     }}
+                                    title="双击书名可改名"
                                     style={{
                                       width: "100%",
-                                      textAlign: "left",
                                       fontSize: 15,
                                       fontWeight: 700,
                                       color: "var(--text)",
                                       whiteSpace: "nowrap",
                                       overflow: "hidden",
                                       textOverflow: "ellipsis",
-                                      cursor: "pointer",
+                                      cursor: "default",
                                     }}
-                                    title={`${book.title}（单击改名，双击打开）`}
                                   >
                                     {book.title}
                                   </div>
@@ -1098,6 +1263,34 @@ export function BookListPage({ onOpenBook, onOpenStats }: Props) {
                             </div>
                           </div>
                         </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenBook(book);
+                          }}
+                          title="进入写作"
+                          style={{
+                            position: "absolute",
+                            right: 12,
+                            bottom: 11,
+                            border: "1px solid color-mix(in srgb, var(--accent) 42%, var(--btn-border))",
+                            borderRadius: 999,
+                            background:
+                              "linear-gradient(180deg, color-mix(in srgb, var(--accent-soft) 75%, var(--btn-bg)) 0%, var(--btn-bg) 100%)",
+                            color: "var(--text)",
+                            padding: "6px 14px",
+                            fontSize: 11,
+                            fontWeight: 600,
+                            letterSpacing: "0.03em",
+                            cursor: "pointer",
+                            boxShadow:
+                              "0 1px 2px color-mix(in srgb, var(--text) 8%, transparent)",
+                          }}
+                        >
+                          继续码字
+                        </button>
                       </div>
                     );
                   })}

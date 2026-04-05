@@ -9,7 +9,6 @@ import {
 
 import { useEditorStore } from "../app/store/editorStore";
 import { useTabStore } from "../app/store/tabStore";
-import { useWritingStatsStore } from "../app/store/writingStatsStore";
 import {
   getMarkdownEditorHandle,
   MarkdownEditor,
@@ -50,7 +49,10 @@ import { isVirtualUntitledPath, virtualUntitledPath } from "../shared/lib/virtua
 
 type EditorPageProps = {
   book: Book;
+  /** 打开书库浮层（不卸载写作区） */
   onBack: () => void;
+  /** 完全回到全屏书库（⌘⇧L） */
+  onExitToLibrary: () => void;
 };
 
 type PendingAction =
@@ -142,7 +144,11 @@ function fileNameFromDiskPath(path: string): string {
   return parts[parts.length - 1] || "Untitled.md";
 }
 
-export function EditorPage({ book, onBack }: EditorPageProps) {
+export function EditorPage({
+  book,
+  onBack,
+  onExitToLibrary,
+}: EditorPageProps) {
   const content = useEditorStore((s) => s.content);
   const filePath = useEditorStore((s) => s.filePath);
   const fileName = useEditorStore((s) => s.fileName);
@@ -171,8 +177,6 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   const renameTabByPath = useTabStore((s) => s.renameTabByPath);
   const removeTabByPath = useTabStore((s) => s.removeTabByPath);
   const clearTabs = useTabStore((s) => s.clearTabs);
-
-  const today = useWritingStatsStore((s) => s.today);
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
@@ -205,6 +209,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   const syncingFromTabRef = useRef(false);
 
   const [docs, setDocs] = useState<DocumentItem[]>([]);
+  const docsRef = useRef<DocumentItem[]>([]);
   const [docsLoading, setDocsLoading] = useState(false);
   const [docsError, setDocsError] = useState<string | null>(null);
 
@@ -241,6 +246,8 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
 
   const rowContainerRef = useRef<HTMLDivElement>(null);
   const draggingSplitRef = useRef(false);
+  const sidePanelDragRafRef = useRef<number | null>(null);
+  const sidePanelPendingWRef = useRef<number | null>(null);
   const prevFilePathForMigrateRef = useRef<string | null>(null);
   /** 仅首次进入本书且无任何标签时自动打开内存 Untitled；用户关掉所有标签后不应再次自动打开 */
   const didAutoOpenUntitledRef = useRef(false);
@@ -248,11 +255,20 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   const showSidePanel = sidePanelOpen;
   const showToolRail = toolRailOpen && !showSidePanel;
 
-  useWritingTracker({
+  const { displayWords, displayDurationMs } = useWritingTracker({
     bookId: book.id,
     filePath,
     wordCount: liveWordCount,
   });
+
+  useLayoutEffect(() => {
+    docsRef.current = docs;
+  }, [docs]);
+
+  const tabsRef = useRef(tabs);
+  useLayoutEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
 
   useEffect(() => {
     localStorage.setItem(SIDE_PANEL_WIDTH_KEY, String(sidePanelWidthPx));
@@ -269,6 +285,10 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   }, [showSidePanel]);
 
   useEffect(() => {
+    const flushSidePanelWidth = () => {
+      const w = sidePanelPendingWRef.current;
+      if (w !== null) setSidePanelWidthPx(w);
+    };
     const onMove = (e: PointerEvent) => {
       if (!draggingSplitRef.current || !rowContainerRef.current) return;
       const rect = rowContainerRef.current.getBoundingClientRect();
@@ -278,10 +298,21 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
       );
       const raw = rect.right - e.clientX;
       const clamped = Math.min(Math.max(MIN_SIDE_W, raw), maxW);
-      setSidePanelWidthPx(clamped);
+      sidePanelPendingWRef.current = clamped;
+      if (sidePanelDragRafRef.current !== null) return;
+      sidePanelDragRafRef.current = requestAnimationFrame(() => {
+        sidePanelDragRafRef.current = null;
+        flushSidePanelWidth();
+      });
     };
     const onUp = () => {
       draggingSplitRef.current = false;
+      if (sidePanelDragRafRef.current !== null) {
+        cancelAnimationFrame(sidePanelDragRafRef.current);
+        sidePanelDragRafRef.current = null;
+      }
+      flushSidePanelWidth();
+      sidePanelPendingWRef.current = null;
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -294,9 +325,22 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   }, []);
 
   useEffect(() => {
-    const saved = localStorage.getItem(getTargetStorageKey(book.id));
-    const parsed = saved ? Number(saved) : NaN;
-    setDailyTarget(Number.isFinite(parsed) && parsed > 0 ? parsed : 2000);
+    const reloadTarget = () => {
+      const saved = localStorage.getItem(getTargetStorageKey(book.id));
+      const parsed = saved ? Number(saved) : NaN;
+      setDailyTarget(Number.isFinite(parsed) && parsed > 0 ? parsed : 2000);
+    };
+    reloadTarget();
+    const onCustom = () => reloadTarget();
+    const onVis = () => {
+      if (document.visibilityState === "visible") reloadTarget();
+    };
+    window.addEventListener("writing-target-changed", onCustom);
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      window.removeEventListener("writing-target-changed", onCustom);
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [book.id]);
 
   const chapterDocs = useMemo(
@@ -306,6 +350,12 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
 
   const outlineDocs = useMemo(
     () => docs.filter((doc) => doc.kind === "outline"),
+    [docs],
+  );
+
+  /** 仅随「文档增删/路径」变化，不随每键字数更新而变，避免搜索侧栏对全库重复读盘 */
+  const docsIdentityForSearch = useMemo(
+    () => docs.map((d) => d.path).join("\0"),
     [docs],
   );
 
@@ -392,6 +442,46 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
     loadDocs,
   ]);
 
+  const openDocNow = useCallback(
+    async (doc: DocumentItem) => {
+      try {
+        const fileContent = await readFile(doc.path);
+
+        openTab({
+          filePath: doc.path,
+          fileName: doc.name,
+          content: fileContent,
+        });
+
+        setFile({
+          filePath: doc.path,
+          fileName: doc.name,
+          content: fileContent,
+        });
+        setDirty(false);
+        setSaveStatus("saved");
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [openTab, setFile, setDirty, setSaveStatus],
+  );
+
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        e.key.toLowerCase() === "l"
+      ) {
+        e.preventDefault();
+        onExitToLibrary();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onExitToLibrary]);
+
   useEffect(() => {
     setBookFolderPath(book.folderPath);
     return () => setBookFolderPath(null);
@@ -477,11 +567,15 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
   useEffect(() => {
     if (!filePath) return;
 
-    setDocs((prev) =>
-      prev.map((doc) =>
-        doc.path === filePath ? { ...doc, wordCount: liveWordCount } : doc,
-      ),
-    );
+    const t = window.setTimeout(() => {
+      setDocs((prev) =>
+        prev.map((doc) =>
+          doc.path === filePath ? { ...doc, wordCount: liveWordCount } : doc,
+        ),
+      );
+    }, 400);
+
+    return () => window.clearTimeout(t);
   }, [filePath, liveWordCount]);
 
   useEffect(() => {
@@ -501,8 +595,9 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
         setSearching(true);
 
         const regex = new RegExp(escapeRegExp(query), "gi");
+        const docList = docsRef.current;
         const results = await Promise.all(
-          docs.map(async (doc) => {
+          docList.map(async (doc) => {
             try {
               const text = await readFile(doc.path);
               const matches = text.match(regex);
@@ -548,7 +643,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
     return () => {
       cancelled = true;
     };
-  }, [sidePanelMode, searchQuery, docs]);
+  }, [sidePanelMode, searchQuery, docsIdentityForSearch]);
 
   useEffect(() => {
     syncingFromTabRef.current = true;
@@ -591,28 +686,6 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
       filePath,
     });
   }, [activeTabId, filePath, fileName, content, isDirty, updateTabContent]);
-
-  const openDocNow = async (doc: DocumentItem) => {
-    try {
-      const fileContent = await readFile(doc.path);
-
-      openTab({
-        filePath: doc.path,
-        fileName: doc.name,
-        content: fileContent,
-      });
-
-      setFile({
-        filePath: doc.path,
-        fileName: doc.name,
-        content: fileContent,
-      });
-      setDirty(false);
-      setSaveStatus("saved");
-    } catch (err) {
-      console.error(err);
-    }
-  };
 
   const handleOpenDoc = async (doc: DocumentItem) => {
     if (renamingDocPath) return;
@@ -1003,7 +1076,9 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                   padding: "5px 7px",
                   borderRadius: 8,
                   border: "1px solid var(--btn-border)",
-                  background: active ? "rgba(59,130,246,0.12)" : "var(--btn-bg)",
+                  background: active
+                    ? "rgba(59,130,246,0.12)"
+                    : "var(--btn-bg)",
                   color: "var(--text)",
                   cursor: "pointer",
                   display: "flex",
@@ -1237,36 +1312,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
             )}
           </div>
         </div>
-      ) : (
-        <div
-          style={{
-            width: 38,
-            minWidth: 38,
-            borderRight: "1px solid var(--border)",
-            background: "var(--panel-bg)",
-            display: "flex",
-            justifyContent: "center",
-            paddingTop: 10,
-          }}
-        >
-          <button
-            type="button"
-            onClick={() => setLibraryOpen(true)}
-            style={{
-              width: 24,
-              height: 24,
-              border: "1px solid var(--btn-border)",
-              borderRadius: 8,
-              background: "var(--btn-bg)",
-              color: "var(--text)",
-              cursor: "pointer",
-              fontSize: 11,
-            }}
-          >
-            ≡
-          </button>
-        </div>
-      )}
+      ) : null}
 
       <div
         style={{
@@ -1290,6 +1336,26 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
             overflowX: "auto",
           }}
         >
+          {!libraryOpen ? (
+            <button
+              type="button"
+              onClick={() => setLibraryOpen(true)}
+              title="展开章节栏"
+              style={{
+                flexShrink: 0,
+                width: 24,
+                height: 24,
+                border: "1px solid var(--btn-border)",
+                borderRadius: 8,
+                background: "var(--btn-bg)",
+                color: "var(--text)",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
+              ≡
+            </button>
+          ) : null}
           {tabs.map((tab) => {
             const tabActive = tab.id === activeTabId;
 
@@ -1299,6 +1365,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                 onClick={() => {
                   setActiveTab(tab.id);
                 }}
+                title="切换文档"
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1328,6 +1395,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
 
                 <button
                   type="button"
+                  draggable={false}
                   onClick={(e) => {
                     e.stopPropagation();
                     closeTab(tab.id);
@@ -1388,6 +1456,9 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                 minHeight: 0,
                 background: "var(--bg)",
                 position: "relative",
+                display: "flex",
+                flexDirection: "column",
+                minWidth: 0,
               }}
             >
               <MarkdownEditor associationAnchors={associationAnchors} />
@@ -1837,7 +1908,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
                     }}
                   >
                     <OutlinePanel
-                      docs={outlineDocs}
+                      docs={docs}
                       currentFilePath={filePath}
                       editorContent={content}
                       onEditorContentChange={setContent}
@@ -2100,7 +2171,7 @@ export function EditorPage({ book, onBack }: EditorPageProps) {
           backdropFilter: "blur(4px)",
         }}
       >
-        今日 {today?.totalWords ?? 0}/{dailyTarget} 字 · {formatMinutes(today?.totalDurationMs ?? 0)} 分钟
+        今日 {displayWords}/{dailyTarget} 字 · {formatMinutes(displayDurationMs)} 分钟
       </div>
 
       {globalAssocOverlayOpen ? (
