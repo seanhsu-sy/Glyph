@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import CodeMirror from "@uiw/react-codemirror";
 import { markdown } from "@codemirror/lang-markdown";
 import { EditorSelection, Facet, StateField } from "@codemirror/state";
@@ -7,7 +7,6 @@ import {
   DecorationSet,
   EditorView,
   keymap,
-  highlightActiveLine,
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
@@ -22,10 +21,11 @@ import {
 import { useTypewriterStore } from "../../../app/store/typewriterStore";
 import { useThemeStore } from "../../../app/store/themeStore";
 import { useEditorStore } from "../../../app/store/editorStore";
+import { useReferencePaneStore } from "../../../app/store/referencePaneStore";
 import { playTypewriterClick } from "../../typewriter/webAudio";
 import type { AssocAnchor } from "../../../shared/lib/associations";
 import { setMarkdownPaneHandle } from "../editorPaneRegistry";
-import { useEditorActions } from "../hooks/useEditorActions";
+import { extractTags, useEditorActions } from "../hooks/useEditorActions";
 import type { MarkdownEditorHandle } from "../markdownEditorHandleTypes";
 
 export type { MarkdownEditorHandle } from "../markdownEditorHandleTypes";
@@ -260,18 +260,38 @@ const associationField = StateField.define<DecorationSet>({
 
 type MarkdownEditorProps = {
   associationAnchors?: AssocAnchor[];
+  /** 右侧「参照」分屏编辑区；主编辑区不传或 primary */
+  pane?: "primary" | "reference";
 };
 
 export function MarkdownEditor({
   associationAnchors = [],
+  pane = "primary",
 }: MarkdownEditorProps) {
-  const content = useEditorStore((s) => s.content);
+  const primaryContent = useEditorStore((s) => s.content);
+  const refContent = useReferencePaneStore((s) => s.content);
+  const content = pane === "reference" ? refContent : primaryContent;
+
   const fontFamily = useEditorStore((s) => s.fontFamily);
   const fontSize = useEditorStore((s) => s.fontSize);
   const themeId = useThemeStore((s) => s.theme);
   const typewriterEnabled = useTypewriterStore((s) => s.enabled);
 
-  const { updateContent } = useEditorActions();
+  const { updateContent: updatePrimaryContent } = useEditorActions();
+  const setRefContent = useReferencePaneStore((s) => s.setContent);
+  const setRefTags = useReferencePaneStore((s) => s.setTags);
+
+  const updateContent = useCallback(
+    (value: string) => {
+      if (pane === "reference") {
+        setRefContent(value);
+        setRefTags(extractTags(value));
+      } else {
+        updatePrimaryContent(value);
+      }
+    },
+    [pane, updatePrimaryContent, setRefContent, setRefTags],
+  );
 
   const cmTheme = themeId === "dark" ? "dark" : "light";
 
@@ -362,6 +382,9 @@ export function MarkdownEditor({
   );
 
   useEffect(() => {
+    if (pane === "reference") {
+      return;
+    }
     const handle: MarkdownEditorHandle = {
       applyCommand: (type: MarkdownCommand) => {
         const view = viewRef.current;
@@ -484,13 +507,12 @@ export function MarkdownEditor({
     return () => {
       setMarkdownPaneHandle(null);
     };
-  }, []);
+  }, [pane]);
 
   const extensions = useMemo(
     () => [
       markdown(),
       history(),
-      highlightActiveLine(),
       EditorView.lineWrapping,
       associationFacet.of(associationAnchors),
       associationField,
@@ -505,6 +527,7 @@ export function MarkdownEditor({
       tagField,
       selectionCountPlugin,
       EditorView.updateListener.of((update) => {
+        if (pane === "reference") return;
         if (!update.docChanged) return;
         const userType = update.transactions.some((tr) =>
           tr.isUserEvent("input.type"),
@@ -514,7 +537,7 @@ export function MarkdownEditor({
         playTypewriterClick(0.22);
       }),
     ],
-    [associationAnchors, typewriterEnabled],
+    [associationAnchors, typewriterEnabled, pane],
   );
 
   return (

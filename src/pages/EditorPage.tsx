@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { useEditorStore } from "../app/store/editorStore";
+import { useReferencePaneStore } from "../app/store/referencePaneStore";
 import { useTabStore } from "../app/store/tabStore";
 import {
   getMarkdownEditorHandle,
@@ -45,6 +46,7 @@ import {
   hasGlobalWelcomeBeenShown,
   markGlobalWelcomeShown,
 } from "../shared/lib/welcomeContent";
+import { resolveWritingTarget } from "../shared/lib/writingTarget";
 import { isVirtualUntitledPath, virtualUntitledPath } from "../shared/lib/virtualDocument";
 
 type EditorPageProps = {
@@ -127,10 +129,6 @@ function renderHighlightedText(
 
 function formatMinutes(ms: number) {
   return Math.round(ms / 60000);
-}
-
-function getTargetStorageKey(bookId: string) {
-  return `writing_target_${bookId}`;
 }
 
 const SIDE_PANEL_WIDTH_KEY = "glyph_editor_side_panel_width_px";
@@ -235,7 +233,20 @@ export function EditorPage({
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
 
-  const [dailyTarget, setDailyTarget] = useState(2000);
+  const [dailyTarget, setDailyTarget] = useState(() =>
+    resolveWritingTarget(book.id),
+  );
+
+  const [referenceTab, setReferenceTab] = useState<"outline" | "chapter">(
+    "outline",
+  );
+
+  const refFilePath = useReferencePaneStore((s) => s.filePath);
+  const refFileName = useReferencePaneStore((s) => s.fileName);
+  const refContent = useReferencePaneStore((s) => s.content);
+  const refIsDirty = useReferencePaneStore((s) => s.isDirty);
+  const clearReferencePane = useReferencePaneStore((s) => s.clear);
+  const setReferenceFile = useReferencePaneStore((s) => s.setFile);
 
   const [sidePanelWidthPx, setSidePanelWidthPx] = useState(() => {
     const saved = localStorage.getItem(SIDE_PANEL_WIDTH_KEY);
@@ -326,12 +337,19 @@ export function EditorPage({
 
   useEffect(() => {
     const reloadTarget = () => {
-      const saved = localStorage.getItem(getTargetStorageKey(book.id));
-      const parsed = saved ? Number(saved) : NaN;
-      setDailyTarget(Number.isFinite(parsed) && parsed > 0 ? parsed : 2000);
+      setDailyTarget(resolveWritingTarget(book.id));
     };
     reloadTarget();
-    const onCustom = () => reloadTarget();
+    const onCustom = (ev: Event) => {
+      const d = (ev as CustomEvent<{ scopeKey?: string }>).detail;
+      if (
+        d?.scopeKey === undefined ||
+        d.scopeKey === "all" ||
+        d.scopeKey === book.id
+      ) {
+        reloadTarget();
+      }
+    };
     const onVis = () => {
       if (document.visibilityState === "visible") reloadTarget();
     };
@@ -563,6 +581,31 @@ export function EditorPage({
       window.clearTimeout(timer);
     };
   }, [filePath, content, isDirty, handleSave]);
+
+  const markRefSaved = useReferencePaneStore((s) => s.markSaved);
+
+  useEffect(() => {
+    if (!refFilePath || !refIsDirty) return;
+
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await saveFileContent(refFilePath, refContent);
+          markRefSaved();
+        } catch (err) {
+          console.error("参照分屏保存失败", err);
+        }
+      })();
+    }, 1000);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [refFilePath, refContent, refIsDirty, markRefSaved]);
+
+  useEffect(() => {
+    clearReferencePane();
+  }, [book.id, clearReferencePane]);
 
   useEffect(() => {
     if (!filePath) return;
@@ -912,8 +955,26 @@ export function EditorPage({
 
   const handleOpenOutline = () => {
     closeToolRail();
+    setReferenceTab("outline");
     openSidePanel("outline");
   };
+
+  const openChapterInReferenceSplit = useCallback(
+    async (doc: DocumentItem) => {
+      if (doc.kind !== "chapter") return;
+      try {
+        const text = await readFile(doc.path);
+        setReferenceFile({
+          filePath: doc.path,
+          fileName: doc.name,
+          content: text,
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    },
+    [setReferenceFile],
+  );
 
   const handleOpenReferences = () => {
     closeToolRail();
@@ -1461,7 +1522,111 @@ export function EditorPage({
                 minWidth: 0,
               }}
             >
-              <MarkdownEditor associationAnchors={associationAnchors} />
+              {refFilePath ? (
+                <div
+                  style={{
+                    flex: 1,
+                    minHeight: 0,
+                    display: "flex",
+                    flexDirection: "row",
+                    alignItems: "stretch",
+                    minWidth: 0,
+                  }}
+                >
+                  <div
+                    style={{
+                      flex: 1,
+                      minWidth: MIN_EDITOR_SPLIT_W,
+                      minHeight: 0,
+                      position: "relative",
+                      display: "flex",
+                      flexDirection: "column",
+                    }}
+                  >
+                    <MarkdownEditor associationAnchors={associationAnchors} />
+                  </div>
+                  <div
+                    role="separator"
+                    style={{
+                      width: SPLIT_DIVIDER_W,
+                      flexShrink: 0,
+                      background: "var(--border)",
+                    }}
+                  />
+                  <div
+                    style={{
+                      flex: 1,
+                      minWidth: MIN_EDITOR_SPLIT_W,
+                      minHeight: 0,
+                      display: "flex",
+                      flexDirection: "column",
+                      background: "var(--bg)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        flexShrink: 0,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        gap: 8,
+                        padding: "4px 8px",
+                        borderBottom: "1px solid var(--border)",
+                        background: "var(--card)",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: 11,
+                          color: "var(--text-sub)",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                        }}
+                        title={refFileName}
+                      >
+                        {refFileName}
+                        {refIsDirty ? " *" : ""}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => clearReferencePane()}
+                        aria-label="关闭参照分屏"
+                        title="关闭参照分屏"
+                        style={{
+                          width: 22,
+                          height: 22,
+                          border: "1px solid var(--btn-border)",
+                          borderRadius: 6,
+                          background: "var(--btn-bg)",
+                          color: "var(--text-sub)",
+                          cursor: "pointer",
+                          padding: 0,
+                          lineHeight: 1,
+                          fontSize: 14,
+                          flexShrink: 0,
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        flex: 1,
+                        minHeight: 0,
+                        position: "relative",
+                      }}
+                    >
+                      <MarkdownEditor
+                        pane="reference"
+                        associationAnchors={[]}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <MarkdownEditor associationAnchors={associationAnchors} />
+              )}
 
               {anchorDraft ? (
                 <div
@@ -1810,7 +1975,7 @@ export function EditorPage({
                       fontSize: 11,
                     }}
                   >
-                    大纲
+                    参照
                   </button>
 
                   <button
@@ -1905,22 +2070,124 @@ export function EditorPage({
                       display: "flex",
                       flexDirection: "column",
                       overflow: "hidden",
+                      gap: 8,
                     }}
                   >
-                    <OutlinePanel
-                      docs={docs}
-                      currentFilePath={filePath}
-                      editorContent={content}
-                      onEditorContentChange={setContent}
-                      editorDirty={isDirty}
-                      onOpenOutlineInEditor={async (doc) => {
-                        if (isDirty) {
-                          setPendingAction({ type: "openDoc", doc });
-                          return;
-                        }
-                        await openDocNow(doc);
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 6,
+                        flexShrink: 0,
                       }}
-                    />
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setReferenceTab("outline")}
+                        style={{
+                          flex: 1,
+                          border: `1px solid ${referenceTab === "outline" ? "var(--accent)" : "var(--btn-border)"}`,
+                          borderRadius: 8,
+                          background:
+                            referenceTab === "outline"
+                              ? "rgba(59,130,246,0.12)"
+                              : "var(--btn-bg)",
+                          color: "var(--text)",
+                          padding: "6px 8px",
+                          cursor: "pointer",
+                          fontSize: 11,
+                        }}
+                      >
+                        大纲
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setReferenceTab("chapter")}
+                        style={{
+                          flex: 1,
+                          border: `1px solid ${referenceTab === "chapter" ? "var(--accent)" : "var(--btn-border)"}`,
+                          borderRadius: 8,
+                          background:
+                            referenceTab === "chapter"
+                              ? "rgba(59,130,246,0.12)"
+                              : "var(--btn-bg)",
+                          color: "var(--text)",
+                          padding: "6px 8px",
+                          cursor: "pointer",
+                          fontSize: 11,
+                        }}
+                      >
+                        章节
+                      </button>
+                    </div>
+                    <div
+                      style={{
+                        flex: 1,
+                        minHeight: 0,
+                        display: "flex",
+                        flexDirection: "column",
+                        overflow: "hidden",
+                      }}
+                    >
+                      {referenceTab === "outline" ? (
+                        <OutlinePanel
+                          docs={docs}
+                          currentFilePath={filePath}
+                          editorContent={content}
+                          onEditorContentChange={setContent}
+                          editorDirty={isDirty}
+                          onOpenOutlineInEditor={async (doc) => {
+                            if (isDirty) {
+                              setPendingAction({ type: "openDoc", doc });
+                              return;
+                            }
+                            await openDocNow(doc);
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            flex: 1,
+                            minHeight: 0,
+                            overflow: "auto",
+                            display: "flex",
+                            flexDirection: "column",
+                            gap: 6,
+                          }}
+                        >
+                          {chapterDocs.length === 0 ? (
+                            <div
+                              style={{
+                                fontSize: 11,
+                                color: "var(--text-sub)",
+                                padding: 6,
+                              }}
+                            >
+                              本书暂无章节。
+                            </div>
+                          ) : (
+                            chapterDocs.map((doc) => (
+                              <button
+                                key={doc.path}
+                                type="button"
+                                onClick={() => void openChapterInReferenceSplit(doc)}
+                                style={{
+                                  textAlign: "left",
+                                  border: "1px solid var(--btn-border)",
+                                  borderRadius: 8,
+                                  background: "var(--btn-bg)",
+                                  color: "var(--text)",
+                                  padding: "6px 8px",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                }}
+                              >
+                                {doc.name}
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ) : sidePanelMode === "references" ? (
                   <div
@@ -2107,9 +2374,9 @@ export function EditorPage({
                   lineHeight: 1,
                   whiteSpace: "nowrap",
                 }}
-                title="大纲"
+                title="参照（大纲 / 章节分屏）"
               >
-                大纲
+                参照
               </button>
 
               <button

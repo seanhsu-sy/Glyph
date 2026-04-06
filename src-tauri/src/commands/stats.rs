@@ -162,16 +162,17 @@ fn build_daily_stats_from_logs(logs: &[WritingLog]) -> Vec<DailyStat> {
 }
 
 fn calculate_streaks(daily_stats: &[DailyStat]) -> (i64, i64) {
-    let positive_days: Vec<&DailyStat> = daily_stats
+    // 有写作会话即算「活跃天」（含净删字为负数的日期），用于连续天数
+    let active_days: Vec<&DailyStat> = daily_stats
         .iter()
-        .filter(|item| item.total_words > 0)
+        .filter(|item| item.sessions > 0)
         .collect();
 
-    if positive_days.is_empty() {
+    if active_days.is_empty() {
         return (0, 0);
     }
 
-    let mut dates: Vec<NaiveDate> = positive_days
+    let mut dates: Vec<NaiveDate> = active_days
         .iter()
         .filter_map(|item| NaiveDate::parse_from_str(&item.date, "%Y-%m-%d").ok())
         .collect();
@@ -329,15 +330,18 @@ pub fn get_stats_overview(
     let total_duration_ms: i64 = logs.iter().map(|log| log.duration_ms).sum();
     let total_sessions = logs.len() as i64;
 
-    let positive_days_count = daily_stats.iter().filter(|item| item.total_words > 0).count() as i64;
+    let active_days_count = daily_stats
+        .iter()
+        .filter(|item| item.sessions > 0)
+        .count() as i64;
 
-    let average_words_per_day = if positive_days_count > 0 {
-        let positive_word_sum: i64 = daily_stats
+    let average_words_per_day = if active_days_count > 0 {
+        let word_sum: i64 = daily_stats
             .iter()
-            .filter(|item| item.total_words > 0)
+            .filter(|item| item.sessions > 0)
             .map(|item| item.total_words)
             .sum();
-        positive_word_sum / positive_days_count
+        word_sum / active_days_count
     } else {
         0
     };
@@ -348,7 +352,7 @@ pub fn get_stats_overview(
         total_words,
         total_duration_ms,
         total_sessions,
-        total_writing_days: positive_days_count,
+        total_writing_days: active_days_count,
         current_streak_days,
         longest_streak_days,
         average_words_per_day,

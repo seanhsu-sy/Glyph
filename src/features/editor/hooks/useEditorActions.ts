@@ -7,7 +7,7 @@ export type TagItem = {
   index: number;
 };
 
-function extractTags(text: string): TagItem[] {
+export function extractTags(text: string): TagItem[] {
   const regex = /#[^\s]+/g;
 
   const result: TagItem[] = [];
