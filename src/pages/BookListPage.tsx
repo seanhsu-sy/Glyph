@@ -11,6 +11,7 @@ import {
   setBookGroup,
 } from "../shared/lib/tauri";
 import type { Book } from "../shared/lib/tauri";
+import { getPendingInitialUntitledKey } from "../shared/lib/virtualDocument";
 import { getStatsOverview } from "../shared/lib/stats";
 import type { StatsOverview } from "../shared/lib/stats";
 import { ThemeModeButton } from "../components/ThemeModeButton";
@@ -309,7 +310,8 @@ export function BookListPage({
     if (!trimmed) return;
 
     try {
-      await createBook(trimmed);
+      const created = await createBook(trimmed);
+      localStorage.setItem(getPendingInitialUntitledKey(created.id), "1");
       setNewTitle("");
       setCreating(false);
       await loadBooks();

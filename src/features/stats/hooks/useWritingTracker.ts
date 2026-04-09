@@ -9,6 +9,9 @@ type Params = {
   bookId: string;
   filePath: string | null;
   wordCount: number;
+  /** 参照分屏打开的文档（可选） */
+  referenceFilePath?: string | null;
+  referenceWordCount?: number;
 };
 
 type Session = {
@@ -49,15 +52,58 @@ function todayStr() {
   return `${y}-${m}-${d}`;
 }
 
-export function useWritingTracker({ bookId, filePath, wordCount }: Params): {
+function touchSession(
+  sessionsRef: { current: Record<string, Session> },
+  docPath: string,
+  wordCount: number,
+  now: number,
+  flushSession: (docPath: string) => Promise<void>,
+) {
+  const session = sessionsRef.current[docPath];
+
+  if (!session) {
+    sessionsRef.current[docPath] = {
+      startTime: now,
+      lastTime: now,
+      startWordCount: wordCount,
+      lastWordCount: wordCount,
+    };
+    return;
+  }
+
+  if (now - session.lastTime > IDLE_THRESHOLD) {
+    void flushSession(docPath);
+
+    sessionsRef.current[docPath] = {
+      startTime: now,
+      lastTime: now,
+      startWordCount: wordCount,
+      lastWordCount: wordCount,
+    };
+    return;
+  }
+
+  session.lastTime = now;
+  session.lastWordCount = wordCount;
+}
+
+export function useWritingTracker({
+  bookId,
+  filePath,
+  wordCount,
+  referenceFilePath = null,
+  referenceWordCount = 0,
+}: Params): {
   displayWords: number;
   displayDurationMs: number;
 } {
   const today = useWritingStatsStore((s) => s.today);
   const sessionsRef = useRef<Record<string, Session>>({});
-  const prevRef = useRef<{ filePath: string | null; wordCount: number }>({
+  const prevRef = useRef({
     filePath,
     wordCount,
+    referenceFilePath,
+    referenceWordCount,
   });
 
   const setTodaySummary = useWritingStatsStore((s) => s.setTodaySummary);
@@ -80,6 +126,10 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params): {
   }, [refreshTodaySummary]);
 
   const [liveExtra, setLiveExtra] = useState({ words: 0, durationMs: 0 });
+
+  const flushSessionRef = useRef<(docPath: string) => Promise<void>>(
+    async () => {},
+  );
 
   async function flushSession(docPath: string) {
     const session = sessionsRef.current[docPath];
@@ -114,6 +164,8 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params): {
     }
   }
 
+  flushSessionRef.current = flushSession;
+
   useEffect(() => {
     void refreshTodaySummary();
   }, [refreshTodaySummary]);
@@ -124,66 +176,78 @@ export function useWritingTracker({ bookId, filePath, wordCount }: Params): {
     if (prev.filePath && prev.filePath !== filePath) {
       void flushSession(prev.filePath);
     }
+    if (
+      prev.referenceFilePath &&
+      prev.referenceFilePath !== referenceFilePath
+    ) {
+      void flushSession(prev.referenceFilePath);
+    }
 
-    prevRef.current = { filePath, wordCount };
-  }, [filePath, wordCount]);
+    prevRef.current = {
+      filePath,
+      wordCount,
+      referenceFilePath,
+      referenceWordCount,
+    };
+  }, [filePath, wordCount, referenceFilePath, referenceWordCount]);
 
   useEffect(() => {
-    if (!filePath) return;
-
     const now = Date.now();
-    const session = sessionsRef.current[filePath];
 
-    if (!session) {
-      sessionsRef.current[filePath] = {
-        startTime: now,
-        lastTime: now,
-        startWordCount: wordCount,
-        lastWordCount: wordCount,
-      };
-      return;
+    if (filePath) {
+      touchSession(sessionsRef, filePath, wordCount, now, flushSession);
     }
-
-    if (now - session.lastTime > IDLE_THRESHOLD) {
-      void flushSession(filePath);
-
-      sessionsRef.current[filePath] = {
-        startTime: now,
-        lastTime: now,
-        startWordCount: wordCount,
-        lastWordCount: wordCount,
-      };
-      return;
+    if (referenceFilePath) {
+      touchSession(
+        sessionsRef,
+        referenceFilePath,
+        referenceWordCount,
+        now,
+        flushSession,
+      );
     }
-
-    session.lastTime = now;
-    session.lastWordCount = wordCount;
-  }, [wordCount, filePath]);
+  }, [
+    filePath,
+    wordCount,
+    referenceFilePath,
+    referenceWordCount,
+  ]);
 
   useEffect(() => {
-    if (!filePath) {
+    if (!filePath && !referenceFilePath) {
       setLiveExtra({ words: 0, durationMs: 0 });
       return;
     }
     const tick = () => {
-      const session = sessionsRef.current[filePath];
-      if (!session) {
-        setLiveExtra({ words: 0, durationMs: 0 });
-        return;
+      let words = 0;
+      let durationMs = 0;
+
+      if (filePath) {
+        const s = sessionsRef.current[filePath];
+        if (s) {
+          words += Math.max(0, s.lastWordCount - s.startWordCount);
+          durationMs = Math.max(durationMs, Date.now() - s.startTime);
+        }
       }
-      const words = Math.max(0, session.lastWordCount - session.startWordCount);
-      const durationMs = Date.now() - session.startTime;
+      if (referenceFilePath) {
+        const s = sessionsRef.current[referenceFilePath];
+        if (s) {
+          words += Math.max(0, s.lastWordCount - s.startWordCount);
+          durationMs = Math.max(durationMs, Date.now() - s.startTime);
+        }
+      }
+
       setLiveExtra({ words, durationMs });
     };
     tick();
     const id = window.setInterval(tick, 1000);
     return () => window.clearInterval(id);
-  }, [filePath]);
+  }, [filePath, referenceFilePath]);
 
   useEffect(() => {
     return () => {
       Object.keys(sessionsRef.current).forEach((docPath) => {
-        void flushSession(docPath);
+        void flushSessionRef.current(docPath);
       });
     };
   }, []);

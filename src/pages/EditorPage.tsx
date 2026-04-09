@@ -47,7 +47,11 @@ import {
   markGlobalWelcomeShown,
 } from "../shared/lib/welcomeContent";
 import { resolveWritingTarget } from "../shared/lib/writingTarget";
-import { isVirtualUntitledPath, virtualUntitledPath } from "../shared/lib/virtualDocument";
+import {
+  getPendingInitialUntitledKey,
+  isVirtualUntitledPath,
+  virtualUntitledPath,
+} from "../shared/lib/virtualDocument";
 
 type EditorPageProps = {
   book: Book;
@@ -244,6 +248,7 @@ export function EditorPage({
   const refFilePath = useReferencePaneStore((s) => s.filePath);
   const refFileName = useReferencePaneStore((s) => s.fileName);
   const refContent = useReferencePaneStore((s) => s.content);
+  const refWordCount = useReferencePaneStore((s) => s.wordCount);
   const refIsDirty = useReferencePaneStore((s) => s.isDirty);
   const clearReferencePane = useReferencePaneStore((s) => s.clear);
   const setReferenceFile = useReferencePaneStore((s) => s.setFile);
@@ -260,8 +265,6 @@ export function EditorPage({
   const sidePanelDragRafRef = useRef<number | null>(null);
   const sidePanelPendingWRef = useRef<number | null>(null);
   const prevFilePathForMigrateRef = useRef<string | null>(null);
-  /** 仅首次进入本书且无任何标签时自动打开内存 Untitled；用户关掉所有标签后不应再次自动打开 */
-  const didAutoOpenUntitledRef = useRef(false);
 
   const showSidePanel = sidePanelOpen;
   const showToolRail = toolRailOpen && !showSidePanel;
@@ -270,6 +273,8 @@ export function EditorPage({
     bookId: book.id,
     filePath,
     wordCount: liveWordCount,
+    referenceFilePath: refFilePath,
+    referenceWordCount: refWordCount,
   });
 
   useLayoutEffect(() => {
@@ -516,15 +521,13 @@ export function EditorPage({
   }, [clearTabs]);
 
   useEffect(() => {
-    didAutoOpenUntitledRef.current = false;
-  }, [book.id]);
-
-  useEffect(() => {
     const vpath = virtualUntitledPath(book.id);
     if (tabs.some((t) => t.filePath === vpath)) return;
     if (tabs.length > 0) return;
-    if (didAutoOpenUntitledRef.current) return;
-    didAutoOpenUntitledRef.current = true;
+    const pendingKey = getPendingInitialUntitledKey(book.id);
+    if (localStorage.getItem(pendingKey) !== "1") return;
+
+    localStorage.removeItem(pendingKey);
     const showWelcome = !hasGlobalWelcomeBeenShown();
     const content = showWelcome ? DEFAULT_WELCOME_MARKDOWN : "";
     openTab({
