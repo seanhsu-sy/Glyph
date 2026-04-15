@@ -1,5 +1,27 @@
 # Glyph Release Notes
 
+## 2.0.0 — 2026-04-16
+
+主版本号对齐：**2.0.0**。包含此前 0.1.x 路线中的参照分屏、统计与书库改动，以及 **伏笔系统**（`.glyph/foreshadowing.json`）、**书库创建** 对 Tauri IPC 的检测修复、**构建脚本**（避免 `npm run build dev` 误传参数）、`write_file_ensuring_parent` 等。详见下方历史条目与提交记录。
+
+### macOS 下载后若无法打开（已隔离 / 来自互联网）
+
+将应用拖入「应用程序」后，在 **终端** 执行（路径请按实际安装位置修改）：
+
+```bash
+xattr -cr /Applications/Glyph.app
+```
+
+若仍提示来自身份不明开发者，可再试清除隔离标记：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Glyph.app
+```
+
+也可在 **系统设置 → 隐私与安全性** 中点击 **仍要打开**，或对 `Glyph.app` **右键 → 打开** 完成首次授权。
+
+---
+
 ## 0.1.1 — 2026-04-06
 
 ### 新增
@@ -22,22 +44,6 @@
 
 - 前端：`npm run build` 通过；新增 `referencePaneStore`、共享 `resolveWritingTarget`、`getPendingInitialUntitledKey` 等。
 - 后端：`stats` 中连续天与总览「写作日」统计口径更新。
-
-### macOS 下载后若无法打开（已隔离 / 来自互联网）
-
-将应用拖入「应用程序」后，在 **终端** 执行（路径请按实际安装位置修改）：
-
-```bash
-xattr -cr /Applications/Glyph.app
-```
-
-若仍提示来自身份不明开发者，可再试清除隔离标记：
-
-```bash
-xattr -dr com.apple.quarantine /Applications/Glyph.app
-```
-
-也可在 **系统设置 → 隐私与安全性** 中点击 **仍要打开**，或对 `Glyph.app` **右键 → 打开** 完成首次授权。
 
 ---
 
