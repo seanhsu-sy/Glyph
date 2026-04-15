@@ -12,6 +12,8 @@ type ToolbarProps = {
   onAnnotateSelection?: () => void;
   /** 新建便签（仅 editor 模式） */
   onAddSticky?: () => void;
+  /** 选区添加伏笔 tag（仅 editor 模式） */
+  onAddForeshadow?: () => void;
 };
 
 function getSaveStatusText(status: string, isDirty: boolean) {
@@ -47,6 +49,7 @@ export function Toolbar({
   mode,
   onAnnotateSelection,
   onAddSticky,
+  onAddForeshadow,
 }: ToolbarProps) {
   const { openFile, saveFile, saveFileAs } = useFileActions();
 
@@ -186,6 +189,17 @@ export function Toolbar({
             title="在右下角添加半透明便签，可勾选「跨书」在跨书关联页查看"
           >
             便签
+          </button>
+        ) : null}
+
+        {onAddForeshadow ? (
+          <button
+            type="button"
+            onClick={onAddForeshadow}
+            style={smallButtonStyle}
+            title="选中一段文字后点此，输入伏笔标签（侧栏「伏笔」可统计）"
+          >
+            伏笔
           </button>
         ) : null}
       </div>

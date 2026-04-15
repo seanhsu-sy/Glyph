@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 
 use crate::models::file_model::OpenedFile;
@@ -97,10 +98,18 @@ pub async fn save_file_as(app: AppHandle, content: String) -> Result<Option<Stri
 }
 #[tauri::command]
 pub fn read_file(path: String) -> Result<String, String> {
-    use std::fs;
-
     let content = fs::read_to_string(&path)
         .map_err(|e| format!("读取文件失败: {}", e))?;
 
     Ok(content)
+}
+
+/// 写入前确保父目录存在（用于 `.glyph/` 下配置文件等）。
+#[tauri::command]
+pub fn write_file_ensuring_parent(path: String, content: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    file_service::write_file(&path, &content)
 }

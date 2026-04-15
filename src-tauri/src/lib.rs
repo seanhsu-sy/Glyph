@@ -14,6 +14,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
         open_file_by_dialog,
         read_file,
+        write_file_ensuring_parent,
         save_file_content,
         save_untitled_in_book,
         save_file_as,

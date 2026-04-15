@@ -24,6 +24,7 @@ import { useEditorStore } from "../../../app/store/editorStore";
 import { useReferencePaneStore } from "../../../app/store/referencePaneStore";
 import { playTypewriterClick } from "../../typewriter/webAudio";
 import type { AssocAnchor } from "../../../shared/lib/associations";
+import type { ForeshadowAnchor } from "../../foreshadowing/types";
 import { setMarkdownPaneHandle } from "../editorPaneRegistry";
 import { extractTags, useEditorActions } from "../hooks/useEditorActions";
 import type { MarkdownEditorHandle } from "../markdownEditorHandleTypes";
@@ -258,14 +259,53 @@ const associationField = StateField.define<DecorationSet>({
   provide: (field) => EditorView.decorations.from(field),
 });
 
+const foreshadowFacet = Facet.define<ForeshadowAnchor[], ForeshadowAnchor[]>({
+  combine: (values) => values[values.length - 1] ?? [],
+});
+
+const foreshadowMark = Decoration.mark({
+  class: "cm-foreshadow",
+});
+
+function buildForeshadowDecorations(
+  state: EditorView["state"],
+  anchors: ForeshadowAnchor[],
+) {
+  const len = state.doc.length;
+  const ranges: ReturnType<typeof foreshadowMark.range>[] = [];
+  for (const a of anchors) {
+    const from = Math.max(0, Math.min(a.from, len));
+    const to = Math.max(from, Math.min(a.to, len));
+    if (to > from) {
+      ranges.push(foreshadowMark.range(from, to));
+    }
+  }
+  return Decoration.set(ranges, true);
+}
+
+const foreshadowField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildForeshadowDecorations(state, state.facet(foreshadowFacet));
+  },
+  update(_decorations, tr) {
+    return buildForeshadowDecorations(
+      tr.state,
+      tr.state.facet(foreshadowFacet),
+    );
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
+
 type MarkdownEditorProps = {
   associationAnchors?: AssocAnchor[];
+  foreshadowAnchors?: ForeshadowAnchor[];
   /** 右侧「参照」分屏编辑区；主编辑区不传或 primary */
   pane?: "primary" | "reference";
 };
 
 export function MarkdownEditor({
   associationAnchors = [],
+  foreshadowAnchors = [],
   pane = "primary",
 }: MarkdownEditorProps) {
   const primaryContent = useEditorStore((s) => s.content);
@@ -357,6 +397,15 @@ export function MarkdownEditor({
 
       .cm-association ::selection {
         background: var(--cm-annotate-selection);
+      }
+
+      .cm-foreshadow {
+        background: var(--cm-foreshadow-bg);
+        border-bottom: 1px solid var(--cm-foreshadow-border);
+      }
+
+      .cm-foreshadow ::selection {
+        background: var(--cm-foreshadow-selection);
       }
 
       .cm-gutters {
@@ -477,6 +526,19 @@ export function MarkdownEditor({
         view.focus();
       },
 
+      selectRange: (from: number, to: number) => {
+        const view = viewRef.current;
+        if (!view) return;
+        const len = view.state.doc.length;
+        const f = Math.max(0, Math.min(from, len));
+        const t = Math.max(f, Math.min(to, len));
+        view.dispatch({
+          selection: EditorSelection.range(f, t),
+          scrollIntoView: true,
+        });
+        view.focus();
+      },
+
       getSelection: () => {
         const view = viewRef.current;
         if (!view) return null;
@@ -516,6 +578,8 @@ export function MarkdownEditor({
       EditorView.lineWrapping,
       associationFacet.of(associationAnchors),
       associationField,
+      foreshadowFacet.of(foreshadowAnchors),
+      foreshadowField,
       keymap.of([
         {
           key: "Enter",
@@ -537,7 +601,7 @@ export function MarkdownEditor({
         playTypewriterClick(0.22);
       }),
     ],
-    [associationAnchors, typewriterEnabled, pane],
+    [associationAnchors, foreshadowAnchors, typewriterEnabled, pane],
   );
 
   return (

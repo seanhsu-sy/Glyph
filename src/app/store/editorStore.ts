@@ -6,6 +6,7 @@ export type SidePanelMode =
   | "outline"
   | "references"
   | "search"
+  | "foreshadowing"
   | "stats"
   | "backlinks"
   | "info"

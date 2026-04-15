@@ -1,4 +1,3 @@
-import { isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   clearBookCover,
@@ -14,6 +13,7 @@ import type { Book } from "../shared/lib/tauri";
 import { getPendingInitialUntitledKey } from "../shared/lib/virtualDocument";
 import { getStatsOverview } from "../shared/lib/stats";
 import type { StatsOverview } from "../shared/lib/stats";
+import { hasTauriCore } from "../shared/lib/tauriRuntime";
 import { ThemeModeButton } from "../components/ThemeModeButton";
 import { TypewriterSoundButton } from "../components/TypewriterSoundButton";
 
@@ -152,7 +152,7 @@ function BookCoverSlot({
   const [dataUrl, setDataUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!coverPath || !isTauri()) {
+    if (!coverPath || !hasTauriCore()) {
       setDataUrl(null);
       return;
     }
@@ -305,19 +305,55 @@ export function BookListPage({
     return () => mq.removeEventListener("change", update);
   }, []);
 
+  const [createBookSubmitting, setCreateBookSubmitting] = useState(false);
+
   const handleCreateBook = async () => {
     const trimmed = newTitle.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      window.alert("请输入书名。");
+      return;
+    }
+
+    if (!hasTauriCore()) {
+      window.alert(
+        "当前页面无法调用桌面端（未检测到 Tauri IPC）。\n\n若需创建本地书籍，请在项目目录运行：\n  npm run dev:tauri\n并在打开的 Glyph 窗口中操作（勿仅用浏览器访问 localhost）。",
+      );
+      return;
+    }
+
+    if (createBookSubmitting) return;
+
+    const RPC_MS = 25_000;
+    const withTimeout = <T,>(p: Promise<T>): Promise<T> =>
+      new Promise((resolve, reject) => {
+        const t = window.setTimeout(
+          () => reject(new Error(`创建超时（${RPC_MS / 1000}s），请检查磁盘权限后重试。`)),
+          RPC_MS,
+        );
+        p.then(
+          (v) => {
+            window.clearTimeout(t);
+            resolve(v);
+          },
+          (e) => {
+            window.clearTimeout(t);
+            reject(e);
+          },
+        );
+      });
 
     try {
-      const created = await createBook(trimmed);
+      setCreateBookSubmitting(true);
+      const created = await withTimeout(createBook(trimmed));
       localStorage.setItem(getPendingInitialUntitledKey(created.id), "1");
       setNewTitle("");
       setCreating(false);
       await loadBooks();
     } catch (err) {
       console.error("创建书籍失败", err);
-      alert(`创建书籍失败：${String(err)}`);
+      window.alert(`创建书籍失败：${String(err)}`);
+    } finally {
+      setCreateBookSubmitting(false);
     }
   };
 
@@ -393,7 +429,7 @@ export function BookListPage({
   };
 
   const handleSubmitGroup = async (book: Book) => {
-    if (!isTauri()) return;
+    if (!hasTauriCore()) return;
     if (groupEditCancelledRef.current) {
       groupEditCancelledRef.current = false;
       return;
@@ -411,7 +447,7 @@ export function BookListPage({
   };
 
   const handlePickCover = async (book: Book) => {
-    if (!isTauri()) return;
+    if (!hasTauriCore()) return;
     try {
       await pickAndSetBookCover(book.folderPath);
       await loadBooks();
@@ -426,7 +462,7 @@ export function BookListPage({
   };
 
   const handleClearCover = async (book: Book) => {
-    if (!isTauri()) return;
+    if (!hasTauriCore()) return;
     try {
       await clearBookCover(book.folderPath);
       await loadBooks();
@@ -738,6 +774,7 @@ export function BookListPage({
 
         {creating ? (
           <div
+            onClick={(e) => e.stopPropagation()}
             style={{
               marginBottom: 18,
               padding: 14,
@@ -747,6 +784,8 @@ export function BookListPage({
               display: "flex",
               flexDirection: "column",
               gap: 10,
+              position: "relative",
+              zIndex: 1,
             }}
           >
             <div style={{ fontSize: 13, fontWeight: 600 }}>新建书籍</div>
@@ -758,6 +797,8 @@ export function BookListPage({
               onChange={(e) => setNewTitle(e.currentTarget.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
+                  e.preventDefault();
+                  e.stopPropagation();
                   void handleCreateBook();
                 }
               }}
@@ -778,7 +819,9 @@ export function BookListPage({
             <div style={{ display: "flex", gap: 8 }}>
               <button
                 type="button"
-                onClick={() => {
+                disabled={createBookSubmitting}
+                onClick={(e) => {
+                  e.stopPropagation();
                   void handleCreateBook();
                 }}
                 style={{
@@ -787,16 +830,19 @@ export function BookListPage({
                   background: "var(--btn-bg)",
                   color: "var(--text)",
                   padding: "7px 11px",
-                  cursor: "pointer",
+                  cursor: createBookSubmitting ? "wait" : "pointer",
                   fontSize: 12,
+                  opacity: createBookSubmitting ? 0.75 : 1,
                 }}
               >
-                创建
+                {createBookSubmitting ? "创建中…" : "创建"}
               </button>
 
               <button
                 type="button"
-                onClick={() => {
+                disabled={createBookSubmitting}
+                onClick={(e) => {
+                  e.stopPropagation();
                   setCreating(false);
                   setNewTitle("");
                 }}
@@ -1048,7 +1094,7 @@ export function BookListPage({
                             bookFolderPath={book.folderPath}
                             bookTitle={book.title}
                             coverDataBust={coverDataBust[book.id] ?? 0}
-                            canInteract={isTauri()}
+                            canInteract={hasTauriCore()}
                             onPick={() => {
                               void handlePickCover(book);
                             }}
@@ -1175,7 +1221,7 @@ export function BookListPage({
                               }}
                             >
                               <span style={{ color: "var(--text-sub)" }}>分组</span>
-                              {isTauri() ? (
+                              {hasTauriCore() ? (
                                 editingGroupBookId === book.id ? (
                                   <input
                                     autoFocus

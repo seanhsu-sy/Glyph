@@ -34,6 +34,10 @@
   --cm-annotate-bg: rgba(180, 83, 9, 0.1);
   --cm-annotate-border: rgba(146, 64, 14, 0.38);
   --cm-annotate-selection: rgba(217, 119, 6, 0.26);
+  /* 伏笔高亮：偏紫，与批注区分 */
+  --cm-foreshadow-bg: rgba(91, 33, 182, 0.09);
+  --cm-foreshadow-border: rgba(109, 40, 217, 0.35);
+  --cm-foreshadow-selection: rgba(124, 58, 237, 0.22);
   --cm-active-line: rgba(0, 0, 0, 0.035);
 }
 
@@ -58,6 +62,9 @@
   --cm-annotate-bg: rgba(245, 158, 11, 0.12);
   --cm-annotate-border: rgba(251, 191, 36, 0.32);
   --cm-annotate-selection: rgba(251, 191, 36, 0.2);
+  --cm-foreshadow-bg: rgba(167, 139, 250, 0.12);
+  --cm-foreshadow-border: rgba(196, 181, 253, 0.38);
+  --cm-foreshadow-selection: rgba(167, 139, 250, 0.2);
   --cm-active-line: rgba(255, 255, 255, 0.04);
 }
 
@@ -83,6 +90,9 @@
   --cm-annotate-bg: rgba(180, 120, 60, 0.1);
   --cm-annotate-border: rgba(140, 90, 40, 0.35);
   --cm-annotate-selection: rgba(200, 140, 70, 0.22);
+  --cm-foreshadow-bg: rgba(91, 33, 182, 0.08);
+  --cm-foreshadow-border: rgba(109, 40, 217, 0.32);
+  --cm-foreshadow-selection: rgba(124, 58, 237, 0.18);
   --cm-active-line: rgba(45, 90, 72, 0.06);
 }
 
@@ -108,6 +118,9 @@
   --cm-annotate-bg: rgba(180, 100, 40, 0.1);
   --cm-annotate-border: rgba(160, 80, 30, 0.32);
   --cm-annotate-selection: rgba(220, 140, 80, 0.2);
+  --cm-foreshadow-bg: rgba(147, 51, 234, 0.1);
+  --cm-foreshadow-border: rgba(168, 85, 247, 0.34);
+  --cm-foreshadow-selection: rgba(192, 132, 252, 0.2);
   --cm-active-line: rgba(201, 75, 125, 0.06);
 }
 
@@ -133,6 +146,9 @@
   --cm-annotate-bg: rgba(120, 70, 20, 0.1);
   --cm-annotate-border: rgba(100, 60, 15, 0.38);
   --cm-annotate-selection: rgba(160, 110, 50, 0.22);
+  --cm-foreshadow-bg: rgba(88, 28, 135, 0.1);
+  --cm-foreshadow-border: rgba(107, 33, 168, 0.36);
+  --cm-foreshadow-selection: rgba(147, 51, 234, 0.18);
   --cm-active-line: rgba(100, 80, 40, 0.07);
 }
 

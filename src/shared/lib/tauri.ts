@@ -103,6 +103,14 @@ export async function readFile(path: string): Promise<string> {
   return await invoke<string>("read_file", { path });
 }
 
+/** 写入文件；若父目录不存在则创建（如书籍 `.glyph/` 下配置）。 */
+export async function writeFileEnsuringParent(
+  path: string,
+  content: string,
+): Promise<void> {
+  await invoke<void>("write_file_ensuring_parent", { path, content });
+}
+
 export async function createDocument(
   bookPath: string,
   title: string,

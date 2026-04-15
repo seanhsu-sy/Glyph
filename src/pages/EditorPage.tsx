@@ -16,6 +16,13 @@ import {
 } from "../features/editor/components/MarkdownEditor";
 import { EditorLinkagesPanel } from "../features/associations/EditorLinkagesPanel";
 import { GlobalAssociationsView } from "../features/associations/GlobalAssociationsView";
+import { ForeshadowingPanel } from "../features/foreshadowing/components/ForeshadowingPanel";
+import {
+  anchorsForDocumentPath,
+  reconcileRecordPositions,
+} from "../features/foreshadowing/services/foreshadowingResolve";
+import { useForeshadowingStore } from "../features/foreshadowing/store/foreshadowingStore";
+import type { ForeshadowRecord } from "../features/foreshadowing/types";
 import { OutlinePanel } from "../features/editor/components/OutlinePanel";
 import { Toolbar } from "../features/editor/components/Toolbar";
 import { MarkdownPreview } from "../features/preview/components/MarkdownPreview";
@@ -180,6 +187,18 @@ export function EditorPage({
   const removeTabByPath = useTabStore((s) => s.removeTabByPath);
   const clearTabs = useTabStore((s) => s.clearTabs);
 
+  const foreshadowRecords = useForeshadowingStore((s) => s.records);
+  const loadForeshadowBook = useForeshadowingStore((s) => s.loadBook);
+  const addForeshadowRecord = useForeshadowingStore((s) => s.addRecord);
+  const migrateForeshadowUntitled = useForeshadowingStore(
+    (s) => s.migrateUntitledPath,
+  );
+  const removeForeshadowForDoc = useForeshadowingStore(
+    (s) => s.removeRecordsForDeletedDoc,
+  );
+  const renameForeshadowDoc = useForeshadowingStore((s) => s.renameDocPath);
+  const reconcileForeshadowDoc = useForeshadowingStore((s) => s.reconcileDoc);
+
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabId) ?? null,
     [tabs, activeTabId],
@@ -194,6 +213,13 @@ export function EditorPage({
     quote: string;
     body: string;
     scopeGlobal: boolean;
+  } | null>(null);
+
+  const [foreshadowDraft, setForeshadowDraft] = useState<{
+    from: number;
+    to: number;
+    quote: string;
+    tag: string;
   } | null>(null);
 
   const [globalAssocOverlayOpen, setGlobalAssocOverlayOpen] = useState(false);
@@ -265,6 +291,11 @@ export function EditorPage({
   const sidePanelDragRafRef = useRef<number | null>(null);
   const sidePanelPendingWRef = useRef<number | null>(null);
   const prevFilePathForMigrateRef = useRef<string | null>(null);
+  const foreshadowJumpRef = useRef<{
+    docPath: string;
+    from: number;
+    to: number;
+  } | null>(null);
 
   const showSidePanel = sidePanelOpen;
   const showToolRail = toolRailOpen && !showSidePanel;
@@ -374,6 +405,11 @@ export function EditorPage({
   const outlineDocs = useMemo(
     () => docs.filter((doc) => doc.kind === "outline"),
     [docs],
+  );
+
+  const foreshadowAnchors = useMemo(
+    () => anchorsForDocumentPath(content, foreshadowRecords, filePath),
+    [content, foreshadowRecords, filePath],
   );
 
   /** 仅随「文档增删/路径」变化，不随每键字数更新而变，避免搜索侧栏对全库重复读盘 */
@@ -515,6 +551,10 @@ export function EditorPage({
   }, [book.folderPath, loadDocs]);
 
   useEffect(() => {
+    void loadForeshadowBook(book.folderPath);
+  }, [book.folderPath, loadForeshadowBook]);
+
+  useEffect(() => {
     return () => {
       clearTabs();
     };
@@ -554,10 +594,15 @@ export function EditorPage({
         saveAssociations(next);
         return next;
       });
+      void migrateForeshadowUntitled(
+        prev,
+        filePath,
+        fileNameFromDiskPath(filePath),
+      );
       void loadDocs();
     }
     prevFilePathForMigrateRef.current = filePath;
-  }, [filePath, book.id, loadDocs]);
+  }, [filePath, book.id, loadDocs, migrateForeshadowUntitled]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -584,6 +629,26 @@ export function EditorPage({
       window.clearTimeout(timer);
     };
   }, [filePath, content, isDirty, handleSave]);
+
+  useEffect(() => {
+    if (!filePath || isVirtualUntitledPath(filePath)) return;
+    const t = window.setTimeout(() => {
+      void reconcileForeshadowDoc(filePath, content);
+    }, 1800);
+    return () => window.clearTimeout(t);
+  }, [filePath, content, reconcileForeshadowDoc]);
+
+  useEffect(() => {
+    const j = foreshadowJumpRef.current;
+    if (!j || filePath !== j.docPath) return;
+    const id = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        getMarkdownEditorHandle()?.selectRange(j.from, j.to);
+        foreshadowJumpRef.current = null;
+      });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [filePath, content]);
 
   const markRefSaved = useReferencePaneStore((s) => s.markSaved);
 
@@ -821,6 +886,87 @@ export function EditorPage({
     });
   };
 
+  const handleAddForeshadow = () => {
+    const sel = getMarkdownEditorHandle()?.getSelection();
+    if (!sel || sel.from === sel.to) {
+      window.alert("请先选中一段文字");
+      return;
+    }
+    if (!filePath) {
+      window.alert("请先打开一篇文档");
+      return;
+    }
+    if (isVirtualUntitledPath(filePath)) {
+      window.alert("请先保存未命名文档（⌘S），再添加伏笔。");
+      return;
+    }
+    setForeshadowDraft({
+      from: sel.from,
+      to: sel.to,
+      quote: sel.text,
+      tag: "",
+    });
+  };
+
+  const handleSaveForeshadowDraft = () => {
+    if (!foreshadowDraft || !filePath) return;
+    const tag = foreshadowDraft.tag.trim();
+    if (!tag) {
+      window.alert("请输入伏笔标签名");
+      return;
+    }
+    const meta = docs.find((d) => d.path === filePath);
+    const docKind = meta?.kind ?? "chapter";
+    void addForeshadowRecord({
+      tag,
+      docPath: filePath,
+      docName: fileName,
+      docKind,
+      from: foreshadowDraft.from,
+      to: foreshadowDraft.to,
+      excerpt: foreshadowDraft.quote,
+    });
+    setForeshadowDraft(null);
+  };
+
+  const handleForeshadowJump = useCallback(
+    async (rec: ForeshadowRecord) => {
+      const doc = docs.find((d) => d.path === rec.docPath);
+      if (!doc) {
+        window.alert("该文档已不存在。");
+        return;
+      }
+      let textForResolve = content;
+      if (filePath !== doc.path) {
+        try {
+          textForResolve = await readFile(doc.path);
+        } catch {
+          window.alert("无法读取该文档。");
+          return;
+        }
+      }
+      const resolved = reconcileRecordPositions(textForResolve, rec);
+      const jump = {
+        docPath: doc.path,
+        from: resolved.from,
+        to: resolved.to,
+      };
+
+      if (filePath === doc.path) {
+        getMarkdownEditorHandle()?.selectRange(resolved.from, resolved.to);
+        return;
+      }
+      if (isDirty) {
+        foreshadowJumpRef.current = jump;
+        setPendingAction({ type: "openDoc", doc });
+        return;
+      }
+      foreshadowJumpRef.current = jump;
+      await openDocNow(doc);
+    },
+    [content, docs, filePath, isDirty, openDocNow],
+  );
+
   const handleSaveAnchorDraft = () => {
     if (!anchorDraft || !filePath) return;
     const body = anchorDraft.body.trim();
@@ -885,6 +1031,8 @@ export function EditorPage({
       await deleteDocument(doc.path);
       await loadDocs();
 
+      void removeForeshadowForDoc(doc.path);
+
       removeTabByPath(doc.path);
 
       if (filePath === doc.path) {
@@ -927,6 +1075,8 @@ export function EditorPage({
 
       const renamed = await renameDocument(doc.path, trimmed);
       await loadDocs();
+
+      void renameForeshadowDoc(doc.path, renamed.path, renamed.name);
 
       renameTabByPath(doc.path, {
         newPath: renamed.path,
@@ -987,6 +1137,11 @@ export function EditorPage({
   const handleOpenSearch = () => {
     closeToolRail();
     openSidePanel("search");
+  };
+
+  const handleOpenForeshadowing = () => {
+    closeToolRail();
+    openSidePanel("foreshadowing");
   };
 
   const renderCreateBox = (kind: "chapter" | "outline") => {
@@ -1512,6 +1667,7 @@ export function EditorPage({
               mode="editor"
               onAnnotateSelection={handleAnnotateSelection}
               onAddSticky={handleAddSticky}
+              onAddForeshadow={handleAddForeshadow}
             />
 
             <div
@@ -1546,7 +1702,10 @@ export function EditorPage({
                       flexDirection: "column",
                     }}
                   >
-                    <MarkdownEditor associationAnchors={associationAnchors} />
+                    <MarkdownEditor
+                      associationAnchors={associationAnchors}
+                      foreshadowAnchors={foreshadowAnchors}
+                    />
                   </div>
                   <div
                     role="separator"
@@ -1628,7 +1787,10 @@ export function EditorPage({
                   </div>
                 </div>
               ) : (
-                <MarkdownEditor associationAnchors={associationAnchors} />
+                <MarkdownEditor
+                  associationAnchors={associationAnchors}
+                  foreshadowAnchors={foreshadowAnchors}
+                />
               )}
 
               {anchorDraft ? (
@@ -1729,6 +1891,99 @@ export function EditorPage({
                     <button
                       type="button"
                       onClick={handleSaveAnchorDraft}
+                      style={{
+                        border: "1px solid var(--accent)",
+                        background: "var(--accent)",
+                        color: "var(--bg)",
+                        borderRadius: 8,
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {foreshadowDraft ? (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: 16,
+                    right: 16,
+                    bottom: anchorDraft ? 200 : 16,
+                    maxWidth: 440,
+                    margin: "0 auto",
+                    zIndex: 20,
+                    padding: 12,
+                    borderRadius: 10,
+                    border: "1px solid var(--border)",
+                    background:
+                      "color-mix(in srgb, var(--panel-bg) 90%, transparent)",
+                    boxShadow: "0 8px 28px rgba(0,0,0,0.18)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-sub)",
+                      maxHeight: 48,
+                      overflow: "auto",
+                    }}
+                  >
+                    {foreshadowDraft.quote || "（空选区）"}
+                  </div>
+                  <input
+                    type="text"
+                    value={foreshadowDraft.tag}
+                    onChange={(e) =>
+                      setForeshadowDraft((d) =>
+                        d ? { ...d, tag: e.target.value } : d,
+                      )
+                    }
+                    placeholder="伏笔标签名…"
+                    style={{
+                      width: "100%",
+                      fontSize: 13,
+                      lineHeight: 1.5,
+                      padding: 8,
+                      borderRadius: 8,
+                      border: "1px solid var(--border)",
+                      background: "var(--bg)",
+                      color: "var(--text)",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      gap: 8,
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setForeshadowDraft(null)}
+                      style={{
+                        border: "1px solid var(--btn-border)",
+                        background: "var(--btn-bg)",
+                        color: "var(--text)",
+                        borderRadius: 8,
+                        padding: "6px 12px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                      }}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveForeshadowDraft}
                       style={{
                         border: "1px solid var(--accent)",
                         background: "var(--accent)",
@@ -2018,6 +2273,25 @@ export function EditorPage({
                   >
                     搜索
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={handleOpenForeshadowing}
+                    style={{
+                      border: "1px solid var(--btn-border)",
+                      background:
+                        sidePanelMode === "foreshadowing"
+                          ? "rgba(59,130,246,0.12)"
+                          : "var(--btn-bg)",
+                      color: "var(--text)",
+                      borderRadius: 6,
+                      padding: "3px 8px",
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                  >
+                    伏笔
+                  </button>
                 </div>
 
                 <button
@@ -2205,6 +2479,21 @@ export function EditorPage({
                       associations={associations}
                       setAssociations={setAssociations}
                       onOpenCrossBook={() => setGlobalAssocOverlayOpen(true)}
+                    />
+                  </div>
+                ) : sidePanelMode === "foreshadowing" ? (
+                  <div
+                    style={{
+                      flex: 1,
+                      minHeight: 0,
+                      overflow: "auto",
+                    }}
+                  >
+                    <ForeshadowingPanel
+                      records={foreshadowRecords}
+                      onJumpToRecord={(rec) => {
+                        void handleForeshadowJump(rec);
+                      }}
                     />
                   </div>
                 ) : sidePanelMode === "search" ? (
