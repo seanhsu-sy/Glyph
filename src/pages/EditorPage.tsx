@@ -53,6 +53,8 @@ import {
   hasGlobalWelcomeBeenShown,
   markGlobalWelcomeShown,
 } from "../shared/lib/welcomeContent";
+import { ChapterLibraryPanel } from "../features/library/components/ChapterLibraryPanel";
+import type { ChapterLibraryPanelHandle } from "../features/library/components/ChapterLibraryPanel";
 import { resolveWritingTarget } from "../shared/lib/writingTarget";
 import {
   getPendingInitialUntitledKey,
@@ -235,6 +237,8 @@ export function EditorPage({
   );
 
   const syncingFromTabRef = useRef(false);
+  const chapterLibraryRef = useRef<ChapterLibraryPanelHandle | null>(null);
+  const [chapterLayoutVersion, setChapterLayoutVersion] = useState(0);
 
   const [docs, setDocs] = useState<DocumentItem[]>([]);
   const docsRef = useRef<DocumentItem[]>([]);
@@ -425,6 +429,7 @@ export function EditorPage({
 
       const nextDocs = await listDocuments(book.folderPath);
       setDocs(nextDocs);
+      setChapterLayoutVersion((v) => v + 1);
     } catch (err) {
       console.error(err);
       setDocsError(String(err));
@@ -567,18 +572,25 @@ export function EditorPage({
     const pendingKey = getPendingInitialUntitledKey(book.id);
     if (localStorage.getItem(pendingKey) !== "1") return;
 
+    if (docsLoading) return;
+
+    if (chapterDocs.length > 0) {
+      localStorage.removeItem(pendingKey);
+      return;
+    }
+
     localStorage.removeItem(pendingKey);
     const showWelcome = !hasGlobalWelcomeBeenShown();
-    const content = showWelcome ? DEFAULT_WELCOME_MARKDOWN : "";
+    const welcomeContent = showWelcome ? DEFAULT_WELCOME_MARKDOWN : "";
     openTab({
       filePath: vpath,
       fileName: "Untitled.md",
-      content,
+      content: welcomeContent,
     });
     if (showWelcome) {
       markGlobalWelcomeShown();
     }
-  }, [book.id, tabs, openTab]);
+  }, [book.id, tabs, openTab, docsLoading, chapterDocs.length]);
 
   useEffect(() => {
     const prev = prevFilePathForMigrateRef.current;
@@ -676,17 +688,13 @@ export function EditorPage({
   }, [book.id, clearReferencePane]);
 
   useEffect(() => {
-    if (!filePath) return;
+    if (!filePath || isVirtualUntitledPath(filePath)) return;
 
-    const t = window.setTimeout(() => {
-      setDocs((prev) =>
-        prev.map((doc) =>
-          doc.path === filePath ? { ...doc, wordCount: liveWordCount } : doc,
-        ),
-      );
-    }, 400);
-
-    return () => window.clearTimeout(t);
+    setDocs((prev) =>
+      prev.map((doc) =>
+        doc.path === filePath ? { ...doc, wordCount: liveWordCount } : doc,
+      ),
+    );
   }, [filePath, liveWordCount]);
 
   useEffect(() => {
@@ -1074,6 +1082,7 @@ export function EditorPage({
       }
 
       const renamed = await renameDocument(doc.path, trimmed);
+      chapterLibraryRef.current?.migrateChapterPath(doc.path, renamed.path);
       await loadDocs();
 
       void renameForeshadowDoc(doc.path, renamed.path, renamed.name);
@@ -1239,6 +1248,7 @@ export function EditorPage({
         const deleting = deletingDocPath === doc.path;
         const confirming = confirmingDocPath === doc.path;
         const renaming = renamingDocPath === doc.path;
+        const words = active ? liveWordCount : doc.wordCount;
 
         return (
           <div
@@ -1326,7 +1336,7 @@ export function EditorPage({
                     fontVariantNumeric: "tabular-nums",
                   }}
                 >
-                  {doc.wordCount}
+                  {words}
                 </span>
               </button>
             )}
@@ -1525,7 +1535,32 @@ export function EditorPage({
                   >
                     章节
                   </div>
-                  {renderDocList(chapterDocs)}
+                  <ChapterLibraryPanel
+                    panelRef={chapterLibraryRef}
+                    bookFolderPath={book.folderPath}
+                    chapterDocs={chapterDocs}
+                    layoutVersion={chapterLayoutVersion}
+                    activePath={filePath}
+                    activeDirty={isDirty}
+                    liveWordCount={liveWordCount}
+                    deletingDocPath={deletingDocPath}
+                    confirmingDocPath={confirmingDocPath}
+                    renamingDocPath={renamingDocPath}
+                    renameTitle={renameTitle}
+                    onRenameTitleChange={setRenameTitle}
+                    onOpenDoc={(doc) => void handleOpenDoc(doc)}
+                    onDeleteDoc={(doc) => void handleDeleteDoc(doc)}
+                    onSubmitRename={(doc) => void handleSubmitRename(doc)}
+                    onCancelRename={() => {
+                      setRenamingDocPath(null);
+                      setRenameTitle("");
+                    }}
+                    onConfirmDelete={setConfirmingDocPath}
+                    onStartRenameChapter={(doc) => {
+                      setRenamingDocPath(doc.path);
+                      setRenameTitle(doc.name.replace(/\.md$/i, ""));
+                    }}
+                  />
                 </div>
               </>
             )}

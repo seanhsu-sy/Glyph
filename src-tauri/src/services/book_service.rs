@@ -183,9 +183,6 @@ pub fn create_book(title: String) -> Result<BookItem, String> {
 
     fs::create_dir_all(&book_dir).map_err(|e| format!("创建书籍文件夹失败: {}", e))?;
 
-    let default_doc_path = book_dir.join("未命名.md");
-    fs::write(&default_doc_path, "").map_err(|e| format!("创建默认文档失败: {}", e))?;
-
     let meta = BookMeta::default();
     write_meta(&book_dir, &meta)?;
 

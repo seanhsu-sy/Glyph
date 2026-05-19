@@ -30,6 +30,8 @@ pub fn run() {
         create_document,
         delete_document,
         rename_document,
+        get_chapter_layout,
+        save_chapter_layout,
         append_writing_log,
         get_writing_summary_by_date,
         get_writing_logs_by_date,

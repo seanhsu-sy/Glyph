@@ -1,5 +1,7 @@
 import { create, type StateCreator } from "zustand";
 
+import { countWords } from "../../shared/lib/wordCount";
+
 export type SaveStatus = "idle" | "saving" | "saved" | "unsaved";
 export type SidePanelMode =
   | "preview"
@@ -11,15 +13,6 @@ export type SidePanelMode =
   | "backlinks"
   | "info"
   | null;
-
-function countWords(text: string): number {
-  if (!text.trim()) return 0;
-
-  const cjk = text.match(/[\u4E00-\u9FFF\u3400-\u4DBF]/g) ?? [];
-  const latin = text.match(/[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*/g) ?? [];
-
-  return cjk.length + latin.length;
-}
 
 type TagItem = {
   tag: string;

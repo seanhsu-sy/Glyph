@@ -27,6 +27,9 @@ export type DocumentItem = {
   kind: "chapter" | "outline";
 };
 
+export type { ChapterLayout, LayoutEntry, VolumeItem } from "./chapterLayout";
+import type { ChapterLayout } from "./chapterLayout";
+
 export async function openFileByDialog(): Promise<OpenedFile | null> {
   return await invoke<OpenedFile | null>("open_file_by_dialog");
 }
@@ -132,4 +135,21 @@ export async function renameDocument(
   newTitle: string,
 ): Promise<DocumentItem> {
   return await invoke<DocumentItem>("rename_document", { path, newTitle });
+}
+
+export async function getChapterLayout(
+  bookPath: string,
+  chapterPaths: string[],
+): Promise<ChapterLayout> {
+  return await invoke<ChapterLayout>("get_chapter_layout", {
+    bookPath,
+    chapterPaths,
+  });
+}
+
+export async function saveChapterLayout(
+  bookPath: string,
+  layout: ChapterLayout,
+): Promise<void> {
+  await invoke<void>("save_chapter_layout", { bookPath, layout });
 }

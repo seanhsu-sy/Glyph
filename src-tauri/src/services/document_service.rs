@@ -29,24 +29,37 @@ fn ensure_md_extension(name: &str) -> String {
     }
 }
 
+fn is_cjk(c: char) -> bool {
+    ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c)
+}
+
+/// 与前端 `shared/lib/wordCount.ts` 一致：汉字/数字各计 1，英文按单词计。
 fn count_words(text: &str) -> usize {
     if text.trim().is_empty() {
         return 0;
     }
 
-    let cjk_count = text
-        .chars()
-        .filter(|c| {
-            ('\u{4E00}'..='\u{9FFF}').contains(c) || ('\u{3400}'..='\u{4DBF}').contains(c)
-        })
-        .count();
+    let mut count = 0usize;
+    let mut in_latin_word = false;
 
-    let latin_count = text
-        .split_whitespace()
-        .filter(|s| s.chars().any(|c| c.is_ascii_alphanumeric()))
-        .count();
+    for c in text.chars() {
+        if is_cjk(c) {
+            count += 1;
+            in_latin_word = false;
+        } else if c.is_ascii_digit() {
+            count += 1;
+            in_latin_word = false;
+        } else if c.is_ascii_alphabetic() {
+            if !in_latin_word {
+                count += 1;
+                in_latin_word = true;
+            }
+        } else {
+            in_latin_word = false;
+        }
+    }
 
-    cjk_count + latin_count
+    count
 }
 
 fn get_kind_and_display_name(path: &Path) -> (String, String) {
